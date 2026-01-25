@@ -8,10 +8,8 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    const ATTRIBS: [VertexAttribute; 2] = wgpu::vertex_attr_array![
-        0 => Float32x3,
-        1 => Float32x3,
-    ];
+    const ATTRIBS: [VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
 
     pub fn layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
@@ -22,9 +20,8 @@ impl Vertex {
     }
 }
 
-/// Cast a slice of Pod types to bytes
 /// # Safety
-/// The caller must ensure T has no padding and is repr(C)
-pub unsafe fn cast_slice<T>(data: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
+/// T must be `#[repr(C)]` with no padding bytes.
+pub unsafe fn as_bytes<T>(data: &[T]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(data.as_ptr().cast(), std::mem::size_of_val(data)) }
 }

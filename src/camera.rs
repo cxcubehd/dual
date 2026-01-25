@@ -11,10 +11,12 @@ pub struct Camera {
 }
 
 impl Camera {
+    const PITCH_LIMIT: f32 = 1.5;
+
     pub fn new(aspect: f32) -> Self {
         Self {
-            position: Vec3::new(0.0, 0.0, 3.0),
-            yaw: -90.0_f32.to_radians(),
+            position: Vec3::new(0.0, 0.0, -3.0),
+            yaw: 0.0,
             pitch: 0.0,
             aspect,
             fov: 45.0_f32.to_radians(),
@@ -25,27 +27,30 @@ impl Camera {
 
     pub fn forward(&self) -> Vec3 {
         Vec3::new(
-            self.yaw.cos() * self.pitch.cos(),
-            self.pitch.sin(),
             self.yaw.sin() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.cos() * self.pitch.cos(),
         )
         .normalize()
     }
 
     pub fn right(&self) -> Vec3 {
-        self.forward().cross(Vec3::Y).normalize()
+        Vec3::Y.cross(self.forward()).normalize()
     }
 
-    pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_at_rh(self.position, self.position + self.forward(), Vec3::Y)
+    pub fn up(&self) -> Vec3 {
+        Vec3::Y
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov, self.aspect, self.near, self.far)
+    pub fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32) {
+        self.yaw += delta_yaw;
+        self.pitch = (self.pitch + delta_pitch).clamp(-Self::PITCH_LIMIT, Self::PITCH_LIMIT);
     }
 
-    pub fn view_projection_matrix(&self) -> Mat4 {
-        self.projection_matrix() * self.view_matrix()
+    pub fn view_projection(&self) -> Mat4 {
+        let view = Mat4::look_at_lh(self.position, self.position + self.forward(), Vec3::Y);
+        let proj = Mat4::perspective_lh(self.fov, self.aspect, self.near, self.far);
+        proj * view
     }
 }
 
@@ -56,20 +61,16 @@ pub struct CameraUniform {
 }
 
 impl CameraUniform {
-    pub fn new() -> Self {
+    pub fn from_camera(camera: &Camera) -> Self {
         Self {
-            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            view_proj: camera.view_projection().to_cols_array_2d(),
         }
-    }
-
-    pub fn update(&mut self, camera: &Camera) {
-        self.view_proj = camera.view_projection_matrix().to_cols_array_2d();
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
-                self as *const Self as *const u8,
+                (self as *const Self).cast(),
                 std::mem::size_of::<Self>(),
             )
         }
