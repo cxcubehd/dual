@@ -35,7 +35,7 @@ impl App {
         self.last_frame = now;
 
         let speed = 3.0 * dt;
-        let sensitivity = 0.003;
+        let sensitivity = 0.0005;
 
         // Movement
         if self.input.is_key_held(KeyCode::KeyW) {
