@@ -22,12 +22,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::protocol::{
-    sequence_greater_than, Packet, PacketHeader, PacketType, MAX_PACKET_SIZE, PROTOCOL_MAGIC,
+    MAX_PACKET_SIZE, PROTOCOL_MAGIC, Packet, PacketHeader, PacketType, sequence_greater_than,
 };
 
 /// Connection state
@@ -156,12 +156,7 @@ impl AckTracker {
         }
 
         // Clean up old acknowledged packets
-        while self
-            .pending
-            .front()
-            .map(|p| p.acked)
-            .unwrap_or(false)
-        {
+        while self.pending.front().map(|p| p.acked).unwrap_or(false) {
             self.pending.pop_front();
         }
 
@@ -330,7 +325,10 @@ impl NetworkEndpoint {
     /// Send a packet to the specified address
     pub fn send_to(&mut self, packet: &Packet, addr: SocketAddr) -> io::Result<usize> {
         let data = packet.serialize().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Serialization error: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Serialization error: {}", e),
+            )
         })?;
 
         if data.len() > MAX_PACKET_SIZE {
@@ -343,8 +341,7 @@ impl NetworkEndpoint {
         let bytes = self.socket.send_to(&data, addr)?;
 
         // Track for acknowledgment
-        self.ack_tracker
-            .track_packet(packet.header.sequence, data);
+        self.ack_tracker.track_packet(packet.header.sequence, data);
 
         // Update stats
         self.stats.packets_sent += 1;
@@ -355,9 +352,9 @@ impl NetworkEndpoint {
 
     /// Send a packet to the connected remote (client mode)
     pub fn send(&mut self, packet: &Packet) -> io::Result<usize> {
-        let addr = self.remote_addr.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "No remote address set")
-        })?;
+        let addr = self
+            .remote_addr
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No remote address set"))?;
         self.send_to(packet, addr)
     }
 
@@ -406,10 +403,9 @@ impl NetworkEndpoint {
                             }
 
                             // Process acknowledgments
-                            let acked = self.ack_tracker.process_ack(
-                                packet.header.ack,
-                                packet.header.ack_bitfield,
-                            );
+                            let acked = self
+                                .ack_tracker
+                                .process_ack(packet.header.ack, packet.header.ack_bitfield);
 
                             // Update stats
                             self.stats.packets_received += 1;
@@ -421,8 +417,7 @@ impl NetworkEndpoint {
                             if self.stats.packets_sent > 0 {
                                 let unacked = self.ack_tracker.get_unacked_count() as f32;
                                 let sent = self.stats.packets_sent as f32;
-                                self.stats.packet_loss_percent =
-                                    (unacked / sent.max(1.0)) * 100.0;
+                                self.stats.packet_loss_percent = (unacked / sent.max(1.0)) * 100.0;
                             }
 
                             self.last_receive_time = Instant::now();

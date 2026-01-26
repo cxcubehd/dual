@@ -26,8 +26,8 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
@@ -351,11 +351,7 @@ impl GameServer {
     }
 
     /// Handle a connection request
-    fn handle_connection_request(
-        &mut self,
-        addr: SocketAddr,
-        client_salt: u64,
-    ) -> io::Result<()> {
+    fn handle_connection_request(&mut self, addr: SocketAddr, client_salt: u64) -> io::Result<()> {
         log::info!("Connection request from {}", addr);
 
         let client = match self.connections.get_or_create_pending(addr, client_salt) {
@@ -434,7 +430,11 @@ impl GameServer {
     }
 
     /// Handle a client command
-    fn handle_client_command(&mut self, addr: SocketAddr, command: ClientCommand) -> io::Result<()> {
+    fn handle_client_command(
+        &mut self,
+        addr: SocketAddr,
+        command: ClientCommand,
+    ) -> io::Result<()> {
         let Some(client) = self.connections.get_by_addr(&addr) else {
             return Ok(());
         };

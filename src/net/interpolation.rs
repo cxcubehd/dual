@@ -246,11 +246,8 @@ impl InterpolationEngine {
         let t = self.interpolation_t;
 
         // Build lookup for 'to' snapshot entities
-        let to_entities: HashMap<u32, &EntityState> = to
-            .entities
-            .iter()
-            .map(|e| (e.entity_id, e))
-            .collect();
+        let to_entities: HashMap<u32, &EntityState> =
+            to.entities.iter().map(|e| (e.entity_id, e)).collect();
 
         // Interpolate each entity
         for from_state in &from.entities {
@@ -296,12 +293,20 @@ impl InterpolationEngine {
         // Orientation: Spherical linear interpolation (SLERP)
         let from_quat_arr = from.decode_orientation();
         let to_quat_arr = to.decode_orientation();
-        let from_quat =
-            Quat::from_xyzw(from_quat_arr[0], from_quat_arr[1], from_quat_arr[2], from_quat_arr[3])
-                .normalize();
-        let to_quat =
-            Quat::from_xyzw(to_quat_arr[0], to_quat_arr[1], to_quat_arr[2], to_quat_arr[3])
-                .normalize();
+        let from_quat = Quat::from_xyzw(
+            from_quat_arr[0],
+            from_quat_arr[1],
+            from_quat_arr[2],
+            from_quat_arr[3],
+        )
+        .normalize();
+        let to_quat = Quat::from_xyzw(
+            to_quat_arr[0],
+            to_quat_arr[1],
+            to_quat_arr[2],
+            to_quat_arr[3],
+        )
+        .normalize();
         let orientation = from_quat.slerp(to_quat, t);
 
         // Animation: Linear interpolation with wrap handling

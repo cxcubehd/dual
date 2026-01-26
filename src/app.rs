@@ -92,6 +92,13 @@ impl App {
 
     fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
         if let (Some(renderer), Some(game)) = (&mut self.renderer, &self.game) {
+            // Process frame-rate updates for immediate input feedback (client-side prediction)
+            {
+                let mut state = game.shared().lock().unwrap();
+                state.frame_update();
+            }
+
+            // Update renderer with predicted camera state
             let state = game.shared().lock().unwrap();
             renderer.update_camera(&state.camera);
             drop(state);

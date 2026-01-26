@@ -25,8 +25,8 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::interpolation::{InterpolatedEntity, InterpolationEngine, JitterBufferConfig};
@@ -298,7 +298,9 @@ impl NetworkClient {
         let command = input.to_command(self.estimated_server_tick, self.command_sequence);
         self.command_sequence = self.command_sequence.wrapping_add(1);
 
-        let packet = self.endpoint.create_packet(PacketType::ClientCommand(command));
+        let packet = self
+            .endpoint
+            .create_packet(PacketType::ClientCommand(command));
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -402,7 +404,9 @@ impl NetworkClient {
     /// Handle world snapshot
     fn handle_snapshot(&mut self, snapshot: WorldSnapshot) -> io::Result<()> {
         // Update server tick estimate
-        self.estimated_server_tick = snapshot.tick.saturating_add(self.config.interpolation_delay);
+        self.estimated_server_tick = snapshot
+            .tick
+            .saturating_add(self.config.interpolation_delay);
 
         // Update last acknowledged command
         self.last_server_ack = snapshot.last_command_ack;

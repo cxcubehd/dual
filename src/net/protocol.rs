@@ -15,7 +15,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-use rkyv::{rancor, Archive, Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize, rancor};
 
 #[allow(unused_imports)]
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};

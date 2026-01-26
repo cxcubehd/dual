@@ -322,11 +322,8 @@ impl SnapshotBuffer {
     ///
     /// Returns (older, newer) snapshots if available.
     pub fn get_interpolation_pair(&self) -> Option<(&WorldSnapshot, &WorldSnapshot)> {
-        let mut snapshots: Vec<&WorldSnapshot> = self
-            .snapshots
-            .iter()
-            .filter_map(|s| s.as_ref())
-            .collect();
+        let mut snapshots: Vec<&WorldSnapshot> =
+            self.snapshots.iter().filter_map(|s| s.as_ref()).collect();
 
         snapshots.sort_by_key(|s| s.tick);
 
@@ -348,11 +345,8 @@ impl SnapshotBuffer {
 
     /// Get snapshot at specific offset from latest (0 = latest, 1 = one before, etc.)
     pub fn get_relative(&self, offset: usize) -> Option<&WorldSnapshot> {
-        let mut snapshots: Vec<&WorldSnapshot> = self
-            .snapshots
-            .iter()
-            .filter_map(|s| s.as_ref())
-            .collect();
+        let mut snapshots: Vec<&WorldSnapshot> =
+            self.snapshots.iter().filter_map(|s| s.as_ref()).collect();
 
         snapshots.sort_by_key(|s| std::cmp::Reverse(s.tick));
 
