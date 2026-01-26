@@ -12,7 +12,7 @@ use crate::renderer::Renderer;
 
 const BASE_MOVE_SPEED: f32 = 3.0;
 const SPRINT_MULTIPLIER: f32 = 3.0;
-const MOUSE_SENSITIVITY: f32 = 0.002;
+const MOUSE_SENSITIVITY: f32 = 0.0002;
 
 pub struct App {
     window: Option<Arc<Window>>,
