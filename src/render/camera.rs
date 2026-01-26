@@ -34,10 +34,6 @@ impl Camera {
         .normalize()
     }
 
-    pub fn right(&self) -> Vec3 {
-        Vec3::Y.cross(self.forward()).normalize()
-    }
-
     pub fn forward_xz(&self) -> Vec3 {
         let (sin, cos) = self.yaw.sin_cos();
         Vec3::new(sin, 0.0, cos)
@@ -46,10 +42,6 @@ impl Camera {
     pub fn right_xz(&self) -> Vec3 {
         let (sin, cos) = self.yaw.sin_cos();
         Vec3::new(cos, 0.0, -sin)
-    }
-
-    pub fn up(&self) -> Vec3 {
-        Vec3::Y
     }
 
     pub fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32) {

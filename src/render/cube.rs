@@ -1,4 +1,4 @@
-use crate::vertex::Vertex;
+use super::vertex::Vertex;
 
 pub const VERTICES: &[Vertex] = &[
     Vertex {
@@ -37,10 +37,10 @@ pub const VERTICES: &[Vertex] = &[
 
 #[rustfmt::skip]
 pub const INDICES: &[u16] = &[
-    0, 1, 2, 0, 2, 3, // Front  (+Z)
-    4, 6, 5, 4, 7, 6, // Back   (-Z)
-    3, 2, 6, 3, 6, 7, // Top    (+Y)
-    0, 5, 1, 0, 4, 5, // Bottom (-Y)
-    1, 6, 2, 1, 5, 6, // Right  (+X)
-    0, 7, 4, 0, 3, 7, // Left   (-X)
+    0, 1, 2, 0, 2, 3,
+    4, 6, 5, 4, 7, 6,
+    3, 2, 6, 3, 6, 7,
+    0, 5, 1, 0, 4, 5,
+    1, 6, 2, 1, 5, 6,
+    0, 7, 4, 0, 3, 7,
 ];

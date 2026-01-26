@@ -1,11 +1,16 @@
+mod camera;
+mod cube;
+mod vertex;
+
+pub use camera::Camera;
+use camera::CameraUniform;
+use cube::{INDICES, VERTICES};
+use vertex::{Vertex, as_bytes};
+
 use anyhow::Result;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
-
-use crate::camera::{Camera, CameraUniform};
-use crate::cube::{INDICES, VERTICES};
-use crate::vertex::{Vertex, as_bytes};
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
@@ -46,7 +51,7 @@ impl Renderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/basic.wgsl").into()),
         });
 
         let pipeline = Self::create_pipeline(&device, &shader, &camera_bind_group_layout, &config);

@@ -1,11 +1,8 @@
 #![allow(unused)]
 
 mod app;
-mod camera;
-mod cube;
-mod input;
-mod renderer;
-mod vertex;
+mod game;
+mod render;
 
 use winit::event_loop::EventLoop;
 

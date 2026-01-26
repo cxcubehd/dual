@@ -1,26 +1,22 @@
-use glam::Vec3;
 use std::sync::Arc;
-use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-use crate::camera::Camera;
-use crate::input::Input;
-use crate::renderer::Renderer;
+use crate::game::{Game, GameTime};
+use crate::render::Renderer;
 
-const BASE_MOVE_SPEED: f32 = 3.0;
-const SPRINT_MULTIPLIER: f32 = 3.0;
-const MOUSE_SENSITIVITY: f32 = 0.0002;
+const TICK_RATE: u32 = 120;
 
+/// Application shell - handles windowing and orchestrates game + renderer.
+/// Keeps game logic and rendering separate.
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    camera: Camera,
-    input: Input,
-    last_frame: Instant,
+    game: Option<Game>,
+    time: GameTime,
     is_fullscreen: bool,
 }
 
@@ -29,77 +25,32 @@ impl App {
         Self {
             window: None,
             renderer: None,
-            camera: Camera::new(1.0),
-            input: Input::new(),
-            last_frame: Instant::now(),
+            game: None,
+            time: GameTime::new(TICK_RATE),
             is_fullscreen: false,
         }
     }
 
     fn update(&mut self) {
-        let dt = self.calculate_delta_time();
-        let speed = self.calculate_move_speed(dt);
+        let Some(game) = &mut self.game else { return };
 
-        self.process_movement(speed);
-        self.process_mouse_look();
-    }
+        // Update timing and get frame delta
+        let frame_dt = self.time.update();
+        let fixed_dt = self.time.fixed_dt();
 
-    fn calculate_delta_time(&mut self) -> f32 {
-        let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f32();
-        self.last_frame = now;
-        dt
-    }
-
-    fn calculate_move_speed(&self, dt: f32) -> f32 {
-        let multiplier = if self.input.is_shift_held() {
-            SPRINT_MULTIPLIER
-        } else {
-            1.0
-        };
-        BASE_MOVE_SPEED * multiplier * dt
-    }
-
-    fn process_movement(&mut self, speed: f32) {
-        let up = Vec3::new(0.0, 1.0, 0.0);
-        let forward = self.camera.forward_xz();
-        let right = self.camera.right_xz();
-
-        if self.input.is_key_held(KeyCode::KeyW) {
-            self.camera.position += forward * speed;
-        }
-        if self.input.is_key_held(KeyCode::KeyS) {
-            self.camera.position -= forward * speed;
-        }
-        if self.input.is_key_held(KeyCode::KeyA) {
-            self.camera.position -= right * speed;
-        }
-        if self.input.is_key_held(KeyCode::KeyD) {
-            self.camera.position += right * speed;
-        }
-        if self.input.is_key_held(KeyCode::Space) {
-            self.camera.position += up * speed;
-        }
-        if self.input.is_ctrl_held() {
-            self.camera.position -= up * speed;
-        }
-    }
-
-    fn process_mouse_look(&mut self) {
-        if !self.input.cursor_captured {
-            self.input.consume_mouse_delta();
-            return;
+        // Run fixed updates (physics, game logic) at constant rate
+        while self.time.should_fixed_update() {
+            game.fixed_process(fixed_dt);
         }
 
-        let (dx, dy) = self.input.consume_mouse_delta();
-        self.camera.rotate(
-            dx as f32 * MOUSE_SENSITIVITY,
-            -dy as f32 * MOUSE_SENSITIVITY,
-        );
+        // Run per-frame update (input, camera, interpolation)
+        game.process(frame_dt);
     }
 
     fn set_cursor_captured(&mut self, captured: bool) {
-        self.input.cursor_captured = captured;
+        if let Some(game) = &mut self.game {
+            game.input.cursor_captured = captured;
+        }
 
         let Some(window) = &self.window else { return };
 
@@ -131,30 +82,39 @@ impl App {
             KeyCode::Escape => self.set_cursor_captured(false),
             KeyCode::F11 => self.toggle_fullscreen(),
             _ => {
-                self.input.keys_held.insert(key);
+                if let Some(game) = &mut self.game {
+                    game.input.set_key(key, true);
+                }
             }
         }
     }
 
     fn handle_key_released(&mut self, key: KeyCode, event_loop: &ActiveEventLoop) {
-        if key == KeyCode::F12 && self.input.is_shift_held() {
+        if let Some(game) = &self.game
+            && key == KeyCode::F12
+            && game.input.is_shift_held()
+        {
             event_loop.exit();
         }
-        self.input.keys_held.remove(&key);
+        if let Some(game) = &mut self.game {
+            game.input.set_key(key, false);
+        }
     }
 
     fn handle_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(size);
-            self.camera.aspect = size.width as f32 / size.height as f32;
+        }
+        if let Some(game) = &mut self.game {
+            game.camera.aspect = size.width as f32 / size.height as f32;
         }
     }
 
     fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
         self.update();
 
-        if let Some(renderer) = &mut self.renderer {
-            renderer.update_camera(&self.camera);
+        if let (Some(renderer), Some(game)) = (&mut self.renderer, &self.game) {
+            renderer.update_camera(&game.camera);
 
             match renderer.render() {
                 Ok(()) => {}
@@ -177,7 +137,7 @@ impl ApplicationHandler for App {
         }
 
         let attrs = Window::default_attributes()
-            .with_title("3D Cube")
+            .with_title("Dual")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720));
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
@@ -185,7 +145,9 @@ impl ApplicationHandler for App {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let renderer = rt.block_on(Renderer::new(window)).unwrap();
-        self.camera.aspect = renderer.size.width as f32 / renderer.size.height as f32;
+
+        let aspect = renderer.size.width as f32 / renderer.size.height as f32;
+        self.game = Some(Game::new(aspect));
         self.renderer = Some(renderer);
     }
 
@@ -206,7 +168,8 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                if !self.input.cursor_captured {
+                let cursor_captured = self.game.as_ref().is_some_and(|g| g.input.cursor_captured);
+                if !cursor_captured {
                     self.set_cursor_captured(true);
                 }
             }
@@ -221,8 +184,10 @@ impl ApplicationHandler for App {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            self.input.accumulate_mouse_delta(delta);
+        if let DeviceEvent::MouseMotion { delta } = event
+            && let Some(game) = &mut self.game
+        {
+            game.input.accumulate_mouse_delta(delta);
         }
     }
 }
