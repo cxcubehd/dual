@@ -5,7 +5,7 @@ use winit::window::Window;
 
 use crate::camera::{Camera, CameraUniform};
 use crate::cube::{INDICES, VERTICES};
-use crate::vertex::{as_bytes, Vertex};
+use crate::vertex::{Vertex, as_bytes};
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
@@ -83,7 +83,8 @@ impl Renderer {
 
     pub fn update_camera(&self, camera: &Camera) {
         let uniform = CameraUniform::from_camera(camera);
-        self.queue.write_buffer(&self.camera_buffer, 0, uniform.as_bytes());
+        self.queue
+            .write_buffer(&self.camera_buffer, 0, uniform.as_bytes());
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -169,7 +170,12 @@ impl Renderer {
         size: winit::dpi::PhysicalSize<u32>,
     ) -> wgpu::SurfaceConfiguration {
         let caps = surface.get_capabilities(adapter);
-        let format = caps.formats.iter().find(|f| f.is_srgb()).copied().unwrap_or(caps.formats[0]);
+        let format = caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(caps.formats[0]);
 
         wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

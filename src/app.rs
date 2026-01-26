@@ -1,3 +1,4 @@
+use glam::Vec3;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -51,14 +52,18 @@ impl App {
     }
 
     fn calculate_move_speed(&self, dt: f32) -> f32 {
-        let multiplier = if self.input.is_shift_held() { SPRINT_MULTIPLIER } else { 1.0 };
+        let multiplier = if self.input.is_shift_held() {
+            SPRINT_MULTIPLIER
+        } else {
+            1.0
+        };
         BASE_MOVE_SPEED * multiplier * dt
     }
 
     fn process_movement(&mut self, speed: f32) {
-        let forward = self.camera.forward();
-        let right = self.camera.right();
-        let up = self.camera.up();
+        let up = Vec3::new(0.0, 1.0, 0.0);
+        let forward = self.camera.forward_xz();
+        let right = self.camera.right_xz();
 
         if self.input.is_key_held(KeyCode::KeyW) {
             self.camera.position += forward * speed;
@@ -87,7 +92,10 @@ impl App {
         }
 
         let (dx, dy) = self.input.consume_mouse_delta();
-        self.camera.rotate(dx as f32 * MOUSE_SENSITIVITY, -dy as f32 * MOUSE_SENSITIVITY);
+        self.camera.rotate(
+            dx as f32 * MOUSE_SENSITIVITY,
+            -dy as f32 * MOUSE_SENSITIVITY,
+        );
     }
 
     fn set_cursor_captured(&mut self, captured: bool) {

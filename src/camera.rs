@@ -38,6 +38,16 @@ impl Camera {
         Vec3::Y.cross(self.forward()).normalize()
     }
 
+    pub fn forward_xz(&self) -> Vec3 {
+        let (sin, cos) = self.yaw.sin_cos();
+        Vec3::new(sin, 0.0, cos)
+    }
+
+    pub fn right_xz(&self) -> Vec3 {
+        let (sin, cos) = self.yaw.sin_cos();
+        Vec3::new(cos, 0.0, -sin)
+    }
+
     pub fn up(&self) -> Vec3 {
         Vec3::Y
     }
@@ -69,10 +79,7 @@ impl CameraUniform {
 
     pub fn as_bytes(&self) -> &[u8] {
         unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self).cast(),
-                std::mem::size_of::<Self>(),
-            )
+            std::slice::from_raw_parts((self as *const Self).cast(), std::mem::size_of::<Self>())
         }
     }
 }
