@@ -14,7 +14,7 @@ use crate::render::Camera;
 const BASE_MOVE_SPEED: f32 = 3.0;
 const SPRINT_MULTIPLIER: f32 = 3.0;
 const MOUSE_SENSITIVITY: f32 = 0.0002;
-const TICK_RATE: u32 = 120;
+const TICK_RATE: u32 = 20;
 
 pub struct SharedState {
     pub input: Input,

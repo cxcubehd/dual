@@ -2,6 +2,7 @@
 
 mod app;
 mod game;
+pub mod net;
 mod render;
 
 use winit::event_loop::EventLoop;
