@@ -20,7 +20,7 @@ pub struct ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            server_tick_rate: 5,
+            server_tick_rate: 20,
             interpolation_delay: 2,
             connection_timeout_secs: 10,
             command_rate: 60,
