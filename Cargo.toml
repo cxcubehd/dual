@@ -13,3 +13,4 @@ anyhow = "1.0.100"
 serde = { version = "1.0", features = ["derive"] }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 log = "0.4"
+glyphon = "0.10.0"

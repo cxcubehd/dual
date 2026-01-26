@@ -23,7 +23,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            tick_rate: 20,
+            tick_rate: 5,
             max_clients: 32,
             snapshot_buffer_size: 64,
             connection_timeout_secs: 10,

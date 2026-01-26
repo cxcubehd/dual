@@ -1,10 +1,12 @@
 mod camera;
 mod cube;
+mod debug_overlay;
 mod vertex;
 
 pub use camera::Camera;
 use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
+use debug_overlay::DebugOverlay;
 use vertex::Vertex;
 
 use std::sync::Arc;
@@ -41,6 +43,7 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    debug_overlay: DebugOverlay,
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
@@ -68,6 +71,8 @@ impl Renderer {
         let vertex_buffer = Self::create_vertex_buffer(&device);
         let index_buffer = Self::create_index_buffer(&device);
         let depth_view = Self::create_depth_view(&device, &config);
+        let debug_overlay =
+            DebugOverlay::new(&device, &queue, config.format, size.width, size.height);
 
         Ok(Self {
             surface,
@@ -81,6 +86,7 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             depth_view,
+            debug_overlay,
             size,
         })
     }
@@ -94,6 +100,8 @@ impl Renderer {
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = Self::create_depth_view(&self.device, &self.config);
+        self.debug_overlay
+            .resize(&self.queue, new_size.width, new_size.height);
     }
 
     pub fn update_camera(&self, camera: &Camera) {
@@ -102,12 +110,22 @@ impl Renderer {
             .write_buffer(&self.camera_buffer, 0, uniform.as_bytes());
     }
 
+    pub fn update_debug_overlay(&mut self, fps: f32, tick_rate: f32) {
+        self.debug_overlay.update(fps, tick_rate);
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
         self.record_render_pass(&mut encoder, &view);
+
+        // Prepare and render debug overlay
+        let _ = self
+            .debug_overlay
+            .prepare(&self.device, &self.queue, self.config.width);
+        self.record_overlay_pass(&mut encoder, &view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -144,6 +162,27 @@ impl Renderer {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..self.num_indices, 0, 0..1);
+    }
+
+    fn record_overlay_pass(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Debug Overlay Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let _ = self.debug_overlay.render(&mut pass);
     }
 
     fn create_instance() -> wgpu::Instance {

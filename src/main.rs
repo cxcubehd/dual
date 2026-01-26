@@ -1,4 +1,5 @@
 mod app;
+mod debug;
 mod game;
 pub mod net;
 mod render;

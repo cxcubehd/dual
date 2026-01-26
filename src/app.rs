@@ -6,6 +6,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
+use crate::debug::DebugStats;
 use crate::game::GameState;
 use crate::render::Renderer;
 
@@ -13,6 +14,7 @@ pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     game: Option<GameState>,
+    debug_stats: DebugStats,
     fullscreen: bool,
 }
 
@@ -28,6 +30,7 @@ impl App {
             window: None,
             renderer: None,
             game: None,
+            debug_stats: DebugStats::new(),
             fullscreen: false,
         }
     }
@@ -95,8 +98,12 @@ impl App {
             return;
         };
 
-        game.update();
+        let dt = game.update();
+        self.debug_stats.record_frame(dt);
+        self.debug_stats.record_tick();
+
         renderer.update_camera(&game.camera);
+        renderer.update_debug_overlay(self.debug_stats.fps(), self.debug_stats.tick_rate());
 
         match renderer.render() {
             Ok(()) => {}

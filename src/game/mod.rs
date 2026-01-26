@@ -27,7 +27,7 @@ impl GameState {
         }
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self) -> f32 {
         let now = Instant::now();
         let dt = self
             .last_frame_time
@@ -38,6 +38,8 @@ impl GameState {
 
         self.process_mouse_look();
         self.process_movement(dt);
+
+        dt
     }
 
     fn process_mouse_look(&mut self) {
