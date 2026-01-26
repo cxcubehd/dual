@@ -1,28 +1,3 @@
-//! Network Client
-//!
-//! Implements the client-side networking for connecting to a game server,
-//! receiving world snapshots, and sending input commands.
-//!
-//! # Client State Machine
-//! ```text
-//! ┌──────────────┐     ConnectionRequest      ┌──────────────┐
-//! │ Disconnected │ ──────────────────────────▶│  Connecting  │
-//! └──────────────┘                            └──────────────┘
-//!        ▲                                           │
-//!        │                                           │ Challenge
-//!        │ Timeout                                   ▼
-//!        │                                    ┌──────────────┐
-//!        │◀─────────────────────────────────  │  Challenge   │
-//!        │                                    │  Response    │
-//!        │                                    └──────────────┘
-//!        │                                           │
-//!        │                                           │ Accepted
-//!        │                                           ▼
-//!        │      Disconnect                    ┌──────────────┐
-//!        └◀───────────────────────────────────│  Connected   │
-//!                                             └──────────────┘
-//! ```
-
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -30,21 +5,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::interpolation::{InterpolatedEntity, InterpolationEngine, JitterBufferConfig};
-use super::protocol::{ClientCommand, Packet, PacketHeader, PacketType, WorldSnapshot};
+use super::protocol::{ClientCommand, Packet, PacketType, WorldSnapshot};
 use super::transport::{ConnectionState, NetworkEndpoint, NetworkStats};
 
-/// Client configuration
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
-    /// Server tick rate (must match server)
     pub server_tick_rate: u32,
-    /// Interpolation delay in ticks
     pub interpolation_delay: u32,
-    /// Connection timeout in seconds
     pub connection_timeout_secs: u64,
-    /// Command send rate (commands per second)
     pub command_rate: u32,
-    /// Ping interval in seconds
     pub ping_interval_secs: f32,
 }
 
@@ -60,15 +29,11 @@ impl Default for ClientConfig {
     }
 }
 
-/// Input state to be sent to server
 #[derive(Debug, Clone, Default)]
 pub struct InputState {
-    /// Movement direction (normalized)
     pub move_direction: [f32; 3],
-    /// View angles (yaw, pitch) in radians
     pub view_yaw: f32,
     pub view_pitch: f32,
-    /// Input flags
     pub sprint: bool,
     pub jump: bool,
     pub crouch: bool,
@@ -79,7 +44,6 @@ pub struct InputState {
 }
 
 impl InputState {
-    /// Convert to a client command
     pub fn to_command(&self, tick: u32, sequence: u32) -> ClientCommand {
         let mut cmd = ClientCommand::new(tick, sequence);
         cmd.encode_move_direction(self.move_direction);
@@ -111,48 +75,28 @@ impl InputState {
     }
 }
 
-/// Network client instance
 pub struct NetworkClient {
-    /// Network endpoint
     endpoint: NetworkEndpoint,
-    /// Client configuration
     config: ClientConfig,
-    /// Connection state
     state: ConnectionState,
-    /// Assigned client ID (after connection)
     client_id: Option<u32>,
-    /// Client's random salt for connection
     client_salt: u64,
-    /// Server's challenge salt
     server_salt: Option<u64>,
-    /// Interpolation engine
     interpolation: InterpolationEngine,
-    /// Command sequence number
     command_sequence: u32,
-    /// Last sent command time
     last_command_time: Instant,
-    /// Command send interval
     command_interval: Duration,
-    /// Last ping time
     last_ping_time: Instant,
-    /// Ping interval
     ping_interval: Duration,
-    /// Connection start time (for timeout)
     connection_start_time: Option<Instant>,
-    /// Running flag
     running: Arc<AtomicBool>,
-    /// Last acknowledged command from server
     last_server_ack: u32,
-    /// Estimated server tick
     estimated_server_tick: u32,
-    /// Clock sync offset (server_time - client_time)
     clock_offset_ms: i64,
 }
 
 impl NetworkClient {
-    /// Create a new network client
     pub fn new(config: ClientConfig) -> io::Result<Self> {
-        // Bind to any available port
         let endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
 
         let tick_duration = 1.0 / config.server_tick_rate as f32;
@@ -184,7 +128,6 @@ impl NetworkClient {
         })
     }
 
-    /// Generate a random salt for connection handshake
     fn generate_salt() -> u64 {
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
@@ -200,7 +143,6 @@ impl NetworkClient {
         hasher.finish()
     }
 
-    /// Connect to a server
     pub fn connect(&mut self, server_addr: SocketAddr) -> io::Result<()> {
         log::info!("Connecting to {}", server_addr);
 
@@ -208,13 +150,11 @@ impl NetworkClient {
         self.state = ConnectionState::Connecting;
         self.connection_start_time = Some(Instant::now());
 
-        // Send connection request
         self.send_connection_request()?;
 
         Ok(())
     }
 
-    /// Disconnect from the server
     pub fn disconnect(&mut self) -> io::Result<()> {
         if self.state == ConnectionState::Connected {
             let packet = self.endpoint.create_packet(PacketType::Disconnect);
@@ -225,7 +165,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Reset client state
     fn reset(&mut self) {
         self.state = ConnectionState::Disconnected;
         self.client_id = None;
@@ -238,7 +177,6 @@ impl NetworkClient {
         self.estimated_server_tick = 0;
     }
 
-    /// Send connection request
     fn send_connection_request(&mut self) -> io::Result<()> {
         let packet = self.endpoint.create_packet(PacketType::ConnectionRequest {
             client_salt: self.client_salt,
@@ -247,15 +185,11 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Update the client (call every frame)
     pub fn update(&mut self, delta_time: f32, input: Option<&InputState>) -> io::Result<()> {
-        // Process network
         self.process_network()?;
 
-        // Handle connection state
         match self.state {
             ConnectionState::Connecting | ConnectionState::ChallengeResponse => {
-                // Check for timeout
                 if let Some(start) = self.connection_start_time {
                     if start.elapsed() > Duration::from_secs(self.config.connection_timeout_secs) {
                         log::warn!("Connection timeout");
@@ -264,10 +198,8 @@ impl NetworkClient {
                 }
             }
             ConnectionState::Connected => {
-                // Update interpolation
                 self.interpolation.update(delta_time);
 
-                // Send commands at fixed rate
                 if let Some(input) = input {
                     if self.last_command_time.elapsed() >= self.command_interval {
                         self.send_command(input)?;
@@ -275,13 +207,11 @@ impl NetworkClient {
                     }
                 }
 
-                // Send periodic pings
                 if self.last_ping_time.elapsed() >= self.ping_interval {
                     self.send_ping()?;
                     self.last_ping_time = Instant::now();
                 }
 
-                // Check for server timeout
                 if self.endpoint.is_timed_out() {
                     log::warn!("Server connection lost");
                     self.reset();
@@ -293,7 +223,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Send a command to the server
     fn send_command(&mut self, input: &InputState) -> io::Result<()> {
         let command = input.to_command(self.estimated_server_tick, self.command_sequence);
         self.command_sequence = self.command_sequence.wrapping_add(1);
@@ -306,7 +235,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Send a ping
     fn send_ping(&mut self) -> io::Result<()> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -319,7 +247,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Process incoming network packets
     fn process_network(&mut self) -> io::Result<()> {
         let packets = self.endpoint.receive()?;
 
@@ -330,7 +257,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Handle a received packet
     fn handle_packet(&mut self, packet: Packet) -> io::Result<()> {
         match packet.payload {
             PacketType::ConnectionChallenge {
@@ -361,14 +287,12 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Handle connection challenge
     fn handle_challenge(&mut self, server_salt: u64, challenge: u64) -> io::Result<()> {
         log::debug!("Received challenge from server");
 
         self.server_salt = Some(server_salt);
         self.state = ConnectionState::ChallengeResponse;
 
-        // Verify and respond
         let expected_challenge = self.client_salt ^ server_salt;
         if challenge != expected_challenge {
             log::warn!("Challenge mismatch");
@@ -383,7 +307,6 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Handle connection accepted
     fn handle_connection_accepted(&mut self, client_id: u32) -> io::Result<()> {
         log::info!("Connected to server with client ID {}", client_id);
 
@@ -394,37 +317,30 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Handle connection denied
     fn handle_connection_denied(&mut self, reason: &str) -> io::Result<()> {
         log::warn!("Connection denied: {}", reason);
         self.reset();
         Ok(())
     }
 
-    /// Handle world snapshot
     fn handle_snapshot(&mut self, snapshot: WorldSnapshot) -> io::Result<()> {
-        // Update server tick estimate
         self.estimated_server_tick = snapshot
             .tick
             .saturating_add(self.config.interpolation_delay);
 
-        // Update last acknowledged command
         self.last_server_ack = snapshot.last_command_ack;
 
-        // Calculate clock offset
         let local_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
         self.clock_offset_ms = snapshot.server_time_ms as i64 - local_time;
 
-        // Push to interpolation engine
         self.interpolation.push_snapshot(snapshot);
 
         Ok(())
     }
 
-    /// Handle pong response
     fn handle_pong(&mut self, timestamp: u64) -> io::Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -437,63 +353,51 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Get connection state
     pub fn state(&self) -> ConnectionState {
         self.state
     }
 
-    /// Check if connected
     pub fn is_connected(&self) -> bool {
         self.state == ConnectionState::Connected
     }
 
-    /// Get client ID (if connected)
     pub fn client_id(&self) -> Option<u32> {
         self.client_id
     }
 
-    /// Get interpolated entity by ID
     pub fn get_entity(&self, entity_id: u32) -> Option<&InterpolatedEntity> {
         self.interpolation.get_entity(entity_id)
     }
 
-    /// Get all interpolated entities
     pub fn entities(&self) -> impl Iterator<Item = &InterpolatedEntity> {
         self.interpolation.entities()
     }
 
-    /// Check if interpolation engine is ready
     pub fn is_interpolation_ready(&self) -> bool {
         self.interpolation.is_ready()
     }
 
-    /// Get network statistics
     pub fn stats(&self) -> &NetworkStats {
         self.endpoint.stats()
     }
 
-    /// Get running flag
     pub fn running(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.running)
     }
 
-    /// Shutdown the client
     pub fn shutdown(&mut self) {
         self.running.store(false, Ordering::SeqCst);
         let _ = self.disconnect();
     }
 
-    /// Get estimated server tick
     pub fn estimated_server_tick(&self) -> u32 {
         self.estimated_server_tick
     }
 
-    /// Get clock offset (server - client time in ms)
     pub fn clock_offset_ms(&self) -> i64 {
         self.clock_offset_ms
     }
 
-    /// Get interpolation statistics
     pub fn interpolation_stats(&self) -> super::interpolation::InterpolationStats {
         self.interpolation.debug_stats()
     }

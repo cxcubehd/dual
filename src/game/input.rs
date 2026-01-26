@@ -1,18 +1,15 @@
 use std::collections::HashSet;
+
 use winit::keyboard::KeyCode;
 
 #[derive(Default)]
 pub struct Input {
-    pub keys_held: HashSet<KeyCode>,
-    pub mouse_delta: (f64, f64),
+    keys_held: HashSet<KeyCode>,
+    mouse_delta: (f64, f64),
     pub cursor_captured: bool,
 }
 
 impl Input {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn set_key(&mut self, key: KeyCode, pressed: bool) {
         if pressed {
             self.keys_held.insert(key);

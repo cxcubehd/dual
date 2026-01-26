@@ -5,12 +5,22 @@ mod vertex;
 pub use camera::Camera;
 use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
-use vertex::{Vertex, as_bytes};
+use vertex::Vertex;
+
+use std::sync::Arc;
 
 use anyhow::Result;
-use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+fn indices_as_bytes(indices: &[u16]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            indices.as_ptr() as *const u8,
+            indices.len() * std::mem::size_of::<u16>(),
+        )
+    }
+}
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
@@ -287,7 +297,7 @@ impl Renderer {
     fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: unsafe { as_bytes(VERTICES) },
+            contents: vertex::vertices_as_bytes(VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         })
     }
@@ -295,7 +305,7 @@ impl Renderer {
     fn create_index_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
-            contents: unsafe { as_bytes(INDICES) },
+            contents: indices_as_bytes(INDICES),
             usage: wgpu::BufferUsages::INDEX,
         })
     }

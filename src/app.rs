@@ -1,18 +1,25 @@
 use std::sync::Arc;
+
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-use crate::game::GameThread;
+use crate::game::GameState;
 use crate::render::Renderer;
 
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    game: Option<GameThread>,
-    is_fullscreen: bool,
+    game: Option<GameState>,
+    fullscreen: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -21,13 +28,13 @@ impl App {
             window: None,
             renderer: None,
             game: None,
-            is_fullscreen: false,
+            fullscreen: false,
         }
     }
 
     fn set_cursor_captured(&mut self, captured: bool) {
-        if let Some(game) = &self.game {
-            game.shared().lock().unwrap().input.cursor_captured = captured;
+        if let Some(game) = &mut self.game {
+            game.input.cursor_captured = captured;
         }
 
         let Some(window) = &self.window else { return };
@@ -46,13 +53,8 @@ impl App {
     fn toggle_fullscreen(&mut self) {
         let Some(window) = &self.window else { return };
 
-        self.is_fullscreen = !self.is_fullscreen;
-        let mode = if self.is_fullscreen {
-            Some(Fullscreen::Borderless(None))
-        } else {
-            None
-        };
-        window.set_fullscreen(mode);
+        self.fullscreen = !self.fullscreen;
+        window.set_fullscreen(self.fullscreen.then(|| Fullscreen::Borderless(None)));
     }
 
     fn handle_key_pressed(&mut self, key: KeyCode) {
@@ -60,8 +62,8 @@ impl App {
             KeyCode::Escape => self.set_cursor_captured(false),
             KeyCode::F11 => self.toggle_fullscreen(),
             _ => {
-                if let Some(game) = &self.game {
-                    game.shared().lock().unwrap().input.set_key(key, true);
+                if let Some(game) = &mut self.game {
+                    game.input.set_key(key, true);
                 }
             }
         }
@@ -69,15 +71,13 @@ impl App {
 
     fn handle_key_released(&mut self, key: KeyCode, event_loop: &ActiveEventLoop) {
         if let Some(game) = &self.game {
-            let state = game.shared().lock().unwrap();
-            if key == KeyCode::F12 && state.input.is_shift_held() {
-                drop(state);
+            if key == KeyCode::F12 && game.input.is_shift_held() {
                 event_loop.exit();
                 return;
             }
         }
-        if let Some(game) = &self.game {
-            game.shared().lock().unwrap().input.set_key(key, false);
+        if let Some(game) = &mut self.game {
+            game.input.set_key(key, false);
         }
     }
 
@@ -85,30 +85,24 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(size);
         }
-        if let Some(game) = &self.game {
-            game.shared().lock().unwrap().camera.aspect = size.width as f32 / size.height as f32;
+        if let Some(game) = &mut self.game {
+            game.camera.aspect = size.width as f32 / size.height as f32;
         }
     }
 
     fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
-        if let (Some(renderer), Some(game)) = (&mut self.renderer, &self.game) {
-            // Process frame-rate updates for immediate input feedback (client-side prediction)
-            {
-                let mut state = game.shared().lock().unwrap();
-                state.frame_update();
-            }
+        let (Some(renderer), Some(game)) = (&mut self.renderer, &mut self.game) else {
+            return;
+        };
 
-            // Update renderer with predicted camera state
-            let state = game.shared().lock().unwrap();
-            renderer.update_camera(&state.camera);
-            drop(state);
+        game.update();
+        renderer.update_camera(&game.camera);
 
-            match renderer.render() {
-                Ok(()) => {}
-                Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
-                Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                Err(e) => eprintln!("Render error: {e:?}"),
-            }
+        match renderer.render() {
+            Ok(()) => {}
+            Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
+            Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+            Err(e) => eprintln!("Render error: {e:?}"),
         }
 
         if let Some(window) = &self.window {
@@ -134,7 +128,7 @@ impl ApplicationHandler for App {
         let renderer = rt.block_on(Renderer::new(window)).unwrap();
 
         let aspect = renderer.size.width as f32 / renderer.size.height as f32;
-        self.game = Some(GameThread::new(aspect));
+        self.game = Some(GameState::new(aspect));
         self.renderer = Some(renderer);
     }
 
@@ -155,10 +149,7 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                let cursor_captured = self
-                    .game
-                    .as_ref()
-                    .is_some_and(|g| g.shared().lock().unwrap().input.cursor_captured);
+                let cursor_captured = self.game.as_ref().is_some_and(|g| g.input.cursor_captured);
                 if !cursor_captured {
                     self.set_cursor_captured(true);
                 }
@@ -174,14 +165,10 @@ impl ApplicationHandler for App {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
-        if let DeviceEvent::MouseMotion { delta } = event
-            && let Some(game) = &self.game
-        {
-            game.shared()
-                .lock()
-                .unwrap()
-                .input
-                .accumulate_mouse_delta(delta);
+        if let DeviceEvent::MouseMotion { delta } = event {
+            if let Some(game) = &mut self.game {
+                game.input.accumulate_mouse_delta(delta);
+            }
         }
     }
 }

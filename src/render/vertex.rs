@@ -19,6 +19,11 @@ impl Vertex {
     }
 }
 
-pub unsafe fn as_bytes<T>(data: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(data.as_ptr().cast(), std::mem::size_of_val(data)) }
+pub fn vertices_as_bytes(vertices: &[Vertex]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            vertices.as_ptr() as *const u8,
+            vertices.len() * std::mem::size_of::<Vertex>(),
+        )
+    }
 }

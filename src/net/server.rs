@@ -1,28 +1,3 @@
-//! Game Server
-//!
-//! Implements the authoritative game server with tick-based simulation,
-//! snapshot generation, and client management.
-//!
-//! # Architecture
-//! ```text
-//! ┌──────────────────────────────────────────────────────────────┐
-//! │                        Game Server                           │
-//! ├──────────────────────────────────────────────────────────────┤
-//! │                                                              │
-//! │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐  │
-//! │  │  Network     │────▶│  Command     │────▶│  Simulation  │  │
-//! │  │  Receive     │     │  Queue       │     │  Tick        │  │
-//! │  └──────────────┘     └──────────────┘     └──────────────┘  │
-//! │                                                    │         │
-//! │                                                    ▼         │
-//! │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐  │
-//! │  │  Network     │◀────│  Snapshot    │◀────│  World       │  │
-//! │  │  Send        │     │  Generation  │     │  State       │  │
-//! │  └──────────────┘     └──────────────┘     └──────────────┘  │
-//! │                                                              │
-//! └──────────────────────────────────────────────────────────────┘
-//! ```
-
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
@@ -32,22 +7,16 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use super::protocol::{ClientCommand, Packet, PacketHeader, PacketType, WorldSnapshot};
-use super::snapshot::{Entity, EntityType, SnapshotBuffer, World};
-use super::transport::{ClientConnection, ConnectionManager, ConnectionState, NetworkEndpoint};
+use super::protocol::{ClientCommand, Packet, PacketHeader, PacketType};
+use super::snapshot::{EntityType, SnapshotBuffer, World};
+use super::transport::{ConnectionManager, ConnectionState, NetworkEndpoint};
 
-/// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    /// Server tick rate (ticks per second)
     pub tick_rate: u32,
-    /// Maximum connected clients
     pub max_clients: usize,
-    /// Snapshot buffer size for lag compensation
     pub snapshot_buffer_size: usize,
-    /// Connection timeout in seconds
     pub connection_timeout_secs: u64,
-    /// Snapshot send rate (every N ticks)
     pub snapshot_send_rate: u32,
 }
 
@@ -58,49 +27,33 @@ impl Default for ServerConfig {
             max_clients: 32,
             snapshot_buffer_size: 64,
             connection_timeout_secs: 10,
-            snapshot_send_rate: 1, // Send every tick
+            snapshot_send_rate: 1,
         }
     }
 }
 
-/// Queued client command awaiting processing
 #[derive(Debug)]
 struct QueuedCommand {
     client_id: u32,
     command: ClientCommand,
-    receive_time: Instant,
 }
 
-/// Game server instance
 pub struct GameServer {
-    /// Network endpoint
     endpoint: NetworkEndpoint,
-    /// Connection manager
     connections: ConnectionManager,
-    /// Server configuration
     config: ServerConfig,
-    /// World state
     world: World,
-    /// Snapshot history for lag compensation
     snapshot_history: SnapshotBuffer,
-    /// Queued commands from clients
     command_queue: VecDeque<QueuedCommand>,
-    /// Current tick number
     tick: u32,
-    /// Tick duration
     tick_duration: Duration,
-    /// Last tick time
     last_tick_time: Instant,
-    /// Accumulated time for fixed timestep
     accumulator: Duration,
-    /// Running flag
     running: Arc<AtomicBool>,
-    /// Server start time
     start_time: Instant,
 }
 
 impl GameServer {
-    /// Create a new game server bound to the specified address
     pub fn new(bind_addr: &str, config: ServerConfig) -> io::Result<Self> {
         let endpoint = NetworkEndpoint::bind(bind_addr)?;
         let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
@@ -127,17 +80,14 @@ impl GameServer {
         })
     }
 
-    /// Get the running flag
     pub fn running(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.running)
     }
 
-    /// Shutdown the server
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    /// Run the server main loop
     pub fn run(&mut self) {
         while self.running.load(Ordering::SeqCst) {
             let now = Instant::now();
@@ -145,18 +95,15 @@ impl GameServer {
             self.last_tick_time = now;
             self.accumulator += delta;
 
-            // Process network input
             if let Err(e) = self.process_network() {
                 log::error!("Network error: {}", e);
             }
 
-            // Fixed timestep simulation
             while self.accumulator >= self.tick_duration {
                 self.accumulator -= self.tick_duration;
                 self.tick();
             }
 
-            // Sleep to avoid busy-waiting
             let elapsed = now.elapsed();
             if elapsed < self.tick_duration / 2 {
                 std::thread::sleep(Duration::from_millis(1));
@@ -166,45 +113,33 @@ impl GameServer {
         log::info!("Server shutting down");
     }
 
-    /// Process one server tick
     fn tick(&mut self) {
-        // Process queued commands
         self.process_commands();
-
-        // Run game simulation
         self.simulate();
 
-        // Advance world tick
         self.world.advance_tick();
         self.tick = self.world.tick();
 
-        // Generate and store snapshot
         let snapshot = self.world.generate_snapshot(0);
         self.snapshot_history.push(snapshot);
 
-        // Broadcast snapshots to clients
         if self.tick % self.config.snapshot_send_rate == 0 {
             self.broadcast_snapshots();
         }
 
-        // Cleanup timed out connections
         let timed_out = self.connections.cleanup_timed_out();
         for client_id in timed_out {
             log::info!("Client {} timed out", client_id);
-            // TODO: Despawn player entity
         }
     }
 
-    /// Process queued client commands
     fn process_commands(&mut self) {
         while let Some(queued) = self.command_queue.pop_front() {
             if let Some(client) = self.connections.get_mut(queued.client_id) {
-                // Update last acknowledged command
                 if queued.command.command_sequence > client.last_command_ack {
                     client.last_command_ack = queued.command.command_sequence;
                 }
 
-                // Apply command to player entity
                 if let Some(entity_id) = client.entity_id {
                     self.apply_command(entity_id, &queued.command);
                 }
@@ -212,7 +147,6 @@ impl GameServer {
         }
     }
 
-    /// Apply a client command to an entity
     fn apply_command(&mut self, entity_id: u32, command: &ClientCommand) {
         let Some(entity) = self.world.get_entity_mut(entity_id) else {
             return;
@@ -222,7 +156,6 @@ impl GameServer {
         let move_dir = command.decode_move_direction();
         let (yaw, pitch) = command.decode_view_angles();
 
-        // Apply movement
         let speed = if command.has_flag(ClientCommand::FLAG_SPRINT) {
             10.0
         } else {
@@ -233,7 +166,6 @@ impl GameServer {
         if move_vec.length_squared() > 0.001 {
             let normalized = move_vec.normalize();
 
-            // Transform by yaw
             let (sin_yaw, cos_yaw) = yaw.sin_cos();
             let world_move = Vec3::new(
                 normalized.x * cos_yaw - normalized.z * sin_yaw,
@@ -247,25 +179,19 @@ impl GameServer {
             entity.velocity = Vec3::ZERO;
         }
 
-        // Apply orientation from view angles
         entity.orientation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
-
         entity.dirty = true;
     }
 
-    /// Run game simulation for this tick
     fn simulate(&mut self) {
         let dt = 1.0 / self.config.tick_rate as f32;
 
-        // Physics simulation for all entities
         for entity in self.world.entities_mut() {
             match entity.entity_type {
                 EntityType::Projectile => {
-                    // Apply gravity and move
                     entity.velocity.y -= 9.8 * dt;
                     entity.position += entity.velocity * dt;
 
-                    // Simple ground collision
                     if entity.position.y < 0.0 {
                         entity.position.y = 0.0;
                         entity.velocity = Vec3::ZERO;
@@ -273,16 +199,12 @@ impl GameServer {
 
                     entity.dirty = true;
                 }
-                EntityType::Player => {
-                    // Player physics handled by commands
-                    // Could add validation/anti-cheat here
-                }
+                EntityType::Player => {}
                 _ => {}
             }
         }
     }
 
-    /// Broadcast world snapshots to all connected clients
     fn broadcast_snapshots(&mut self) {
         let client_data: Vec<(SocketAddr, u32, u32)> = self
             .connections
@@ -292,7 +214,7 @@ impl GameServer {
             .collect();
 
         for (addr, last_cmd_ack, send_seq) in client_data {
-            let mut snapshot = self.world.generate_snapshot(last_cmd_ack);
+            let snapshot = self.world.generate_snapshot(last_cmd_ack);
 
             let header = PacketHeader::new(send_seq, 0, 0);
             let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
@@ -301,14 +223,12 @@ impl GameServer {
                 log::warn!("Failed to send snapshot to {}: {}", addr, e);
             }
 
-            // Increment send sequence for client
             if let Some(client) = self.connections.get_by_addr_mut(&addr) {
                 client.send_sequence = client.send_sequence.wrapping_add(1);
             }
         }
     }
 
-    /// Process incoming network packets
     fn process_network(&mut self) -> io::Result<()> {
         let packets = self.endpoint.receive()?;
 
@@ -319,7 +239,6 @@ impl GameServer {
         Ok(())
     }
 
-    /// Handle a received packet
     fn handle_packet(&mut self, packet: Packet, addr: SocketAddr) -> io::Result<()> {
         match packet.payload {
             PacketType::ConnectionRequest { client_salt } => {
@@ -342,7 +261,6 @@ impl GameServer {
             }
         }
 
-        // Update last receive time for client
         if let Some(client) = self.connections.get_by_addr_mut(&addr) {
             client.touch();
         }
@@ -350,14 +268,12 @@ impl GameServer {
         Ok(())
     }
 
-    /// Handle a connection request
     fn handle_connection_request(&mut self, addr: SocketAddr, client_salt: u64) -> io::Result<()> {
         log::info!("Connection request from {}", addr);
 
         let client = match self.connections.get_or_create_pending(addr, client_salt) {
             Ok(c) => c,
             Err(reason) => {
-                // Server full or other error
                 let header = PacketHeader::new(0, 0, 0);
                 let packet = Packet::new(
                     header,
@@ -389,7 +305,6 @@ impl GameServer {
         Ok(())
     }
 
-    /// Handle a challenge response
     fn handle_challenge_response(
         &mut self,
         addr: SocketAddr,
@@ -404,11 +319,9 @@ impl GameServer {
             return Ok(());
         }
 
-        // Connection successful
         client.state = ConnectionState::Connected;
         let client_id = client.client_id;
 
-        // Spawn player entity
         let entity_id = self.world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
         client.entity_id = Some(entity_id);
 
@@ -419,7 +332,6 @@ impl GameServer {
             entity_id
         );
 
-        // Send acceptance
         let header = PacketHeader::new(client.send_sequence, 0, 0);
         client.send_sequence += 1;
 
@@ -429,7 +341,6 @@ impl GameServer {
         Ok(())
     }
 
-    /// Handle a client command
     fn handle_client_command(
         &mut self,
         addr: SocketAddr,
@@ -443,17 +354,14 @@ impl GameServer {
             return Ok(());
         }
 
-        // Queue command for processing
         self.command_queue.push_back(QueuedCommand {
             client_id: client.client_id,
             command,
-            receive_time: Instant::now(),
         });
 
         Ok(())
     }
 
-    /// Handle a ping request
     fn handle_ping(&mut self, addr: SocketAddr, timestamp: u64) -> io::Result<()> {
         let header = PacketHeader::new(0, 0, 0);
         let packet = Packet::new(header, PacketType::Pong { timestamp });
@@ -461,12 +369,10 @@ impl GameServer {
         Ok(())
     }
 
-    /// Handle a disconnect request
     fn handle_disconnect(&mut self, addr: SocketAddr) -> io::Result<()> {
         if let Some(client) = self.connections.remove_by_addr(&addr) {
             log::info!("Client {} disconnected", client.client_id);
 
-            // Despawn player entity
             if let Some(entity_id) = client.entity_id {
                 self.world.despawn_entity(entity_id);
             }
@@ -474,7 +380,6 @@ impl GameServer {
         Ok(())
     }
 
-    /// Get server statistics
     pub fn stats(&self) -> ServerStats {
         ServerStats {
             tick: self.tick,
@@ -485,18 +390,15 @@ impl GameServer {
         }
     }
 
-    /// Get reference to the world
     pub fn world(&self) -> &World {
         &self.world
     }
 
-    /// Get mutable reference to the world
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
 }
 
-/// Server statistics
 #[derive(Debug, Clone)]
 pub struct ServerStats {
     pub tick: u32,
@@ -522,18 +424,14 @@ mod tests {
         let config = ServerConfig::default();
         let mut server = GameServer::new("127.0.0.1:0", config).unwrap();
 
-        // Spawn a test entity
         let entity_id = server.world.spawn_player(Vec3::ZERO);
 
-        // Create a movement command
         let mut command = ClientCommand::new(0, 1);
         command.encode_move_direction([1.0, 0.0, 0.0]);
         command.encode_view_angles(0.0, 0.0);
 
-        // Apply command
         server.apply_command(entity_id, &command);
 
-        // Entity should have moved
         let entity = server.world.get_entity(entity_id).unwrap();
         assert!(entity.position.x > 0.0);
     }
