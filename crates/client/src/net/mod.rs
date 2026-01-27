@@ -13,5 +13,5 @@ pub use snapshot::{Entity, EntityType, SnapshotBuffer, World};
 pub use transport::{ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats};
 
 pub const DEFAULT_PORT: u16 = 27015;
-pub const DEFAULT_TICK_RATE: u32 = 20;
+pub const DEFAULT_TICK_RATE: u32 = 1;
 pub const DEFAULT_TICK_DURATION_MS: u32 = 1000 / DEFAULT_TICK_RATE;
