@@ -71,8 +71,14 @@ impl Renderer {
         let vertex_buffer = Self::create_vertex_buffer(&device);
         let index_buffer = Self::create_index_buffer(&device);
         let depth_view = Self::create_depth_view(&device, &config);
-        let debug_overlay =
-            DebugOverlay::new(&device, &queue, config.format, size.width, size.height);
+        let debug_overlay = DebugOverlay::new(
+            &adapter,
+            &device,
+            &queue,
+            config.format,
+            size.width,
+            size.height,
+        );
 
         Ok(Self {
             surface,
@@ -198,7 +204,7 @@ impl Renderer {
     ) -> Result<wgpu::Adapter> {
         Ok(instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(surface),
                 force_fallback_adapter: false,
             })

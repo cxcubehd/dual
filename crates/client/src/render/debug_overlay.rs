@@ -4,6 +4,7 @@ use glyphon::{
 };
 
 pub struct DebugOverlay {
+    adapter_info: wgpu::AdapterInfo,
     font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
@@ -14,12 +15,14 @@ pub struct DebugOverlay {
 
 impl DebugOverlay {
     pub fn new(
+        adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
     ) -> Self {
+        let adapter_info = adapter.get_info();
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
@@ -30,9 +33,10 @@ impl DebugOverlay {
         viewport.update(queue, Resolution { width, height });
 
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 20.0));
-        buffer.set_size(&mut font_system, Some(300.0), Some(100.0));
+        buffer.set_size(&mut font_system, Some(300.0), None);
 
         Self {
+            adapter_info,
             font_system,
             swash_cache,
             atlas,
@@ -47,7 +51,10 @@ impl DebugOverlay {
     }
 
     pub fn update(&mut self, fps: f32, tick_rate: f32) {
-        let text = format!("FPS: {:.1}\nTick: {:.1}/s", fps, tick_rate);
+        let text = format!(
+            "FPS: {:.1}\nTick: {:.1}/s\nDevice: {:}",
+            fps, tick_rate, self.adapter_info.name
+        );
 
         self.buffer.set_text(
             &mut self.font_system,
@@ -79,7 +86,7 @@ impl DebugOverlay {
                 left,
                 top: padding,
                 right: screen_width as i32 - padding,
-                bottom: 100,
+                bottom: 200,
             },
             default_color: Color::rgb(255, 255, 255),
             custom_glyphs: &[],
