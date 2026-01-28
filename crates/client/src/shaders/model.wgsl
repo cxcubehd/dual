@@ -61,6 +61,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Ambient + diffuse lighting
     let ambient = 0.3;
     let lit_color = diffuse_color.rgb * (ambient + diffuse * 0.7);
-    
+
     return vec4<f32>(lit_color, diffuse_color.a);
 }
