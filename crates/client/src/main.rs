@@ -1,4 +1,7 @@
+#![allow(unused)]
+
 mod app;
+mod assets;
 mod debug;
 mod game;
 pub mod net;

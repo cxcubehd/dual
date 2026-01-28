@@ -1,13 +1,22 @@
 mod camera;
 mod cube;
 mod debug_overlay;
+mod model;
+mod texture;
 mod vertex;
 
 pub use camera::Camera;
+use glam::{Mat4, Vec3};
+pub use model::{DrawModel, Material, Mesh, Model};
+pub use texture::Texture;
+pub use vertex::ModelVertex;
+
 use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
 use debug_overlay::DebugOverlay;
 use vertex::Vertex;
+
+use crate::assets::Assets;
 
 use std::sync::Arc;
 
@@ -31,17 +40,31 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// MSAA sample count (4x anti-aliasing)
+const MSAA_SAMPLE_COUNT: u32 = 4;
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    // Legacy basic pipeline (for colored cubes)
+    basic_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+    // Camera
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    camera_bind_group_layout: wgpu::BindGroupLayout,
+    // Model pipeline (for textured models)
+    model_pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    model_transform_bind_group_layout: wgpu::BindGroupLayout,
+    // Models
+    models: Vec<Model>,
+    // Other
+    msaa_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     debug_overlay: DebugOverlay,
     pub size: winit::dpi::PhysicalSize<u32>,
@@ -62,14 +85,50 @@ impl Renderer {
         let camera_bind_group =
             Self::create_camera_bind_group(&device, &camera_bind_group_layout, &camera_buffer);
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
+        // Basic shader for colored geometry
+        let basic_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Basic Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/basic.wgsl").into()),
         });
 
-        let pipeline = Self::create_pipeline(&device, &shader, &camera_bind_group_layout, &config);
+        let basic_pipeline =
+            Self::create_basic_pipeline(&device, &basic_shader, &camera_bind_group_layout, &config);
         let vertex_buffer = Self::create_vertex_buffer(&device);
         let index_buffer = Self::create_index_buffer(&device);
+
+        // Model shader for textured geometry
+        let model_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Model Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/model.wgsl").into()),
+        });
+
+        let texture_bind_group_layout = Texture::bind_group_layout(&device);
+
+        let model_transform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Model Transform Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let model_pipeline = Self::create_model_pipeline(
+            &device,
+            &model_shader,
+            &camera_bind_group_layout,
+            &texture_bind_group_layout,
+            &model_transform_bind_group_layout,
+            &config,
+        );
+
+        let msaa_view = Self::create_msaa_view(&device, &config);
         let depth_view = Self::create_depth_view(&device, &config);
         let debug_overlay = DebugOverlay::new(
             &adapter,
@@ -80,21 +139,44 @@ impl Renderer {
             size.height,
         );
 
-        Ok(Self {
+        let mut renderer = Self {
             surface,
             device,
             queue,
             config,
-            pipeline,
+            basic_pipeline,
             vertex_buffer,
             index_buffer,
             num_indices: INDICES.len() as u32,
             camera_buffer,
             camera_bind_group,
+            camera_bind_group_layout,
+            model_pipeline,
+            texture_bind_group_layout,
+            model_transform_bind_group_layout,
+            models: Vec::new(),
+            msaa_view,
             depth_view,
             debug_overlay,
             size,
-        })
+        };
+
+        // Load the barn lamp model
+        if let Some(bytes) = Assets::load_bytes("models/AnisotropyBarnLamp.glb") {
+            if let Ok(index) = renderer.load_model_from_bytes(&bytes, "AnisotropyBarnLamp") {
+                // Scale up by 25 and move next to cube
+                let transform = Mat4::from_translation(Vec3::new(-0.5, 0.0, 0.0))
+                    * Mat4::from_scale(Vec3::splat(9.0))
+                    * Mat4::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), 270f32.to_radians());
+                renderer.set_model_transform(index, transform);
+            } else {
+                log::error!("Failed to load model");
+            }
+        } else {
+            log::warn!("Model models/AnisotropyBarnLamp.glb not found in assets");
+        }
+
+        Ok(renderer)
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -105,6 +187,7 @@ impl Renderer {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+        self.msaa_view = Self::create_msaa_view(&self.device, &self.config);
         self.depth_view = Self::create_depth_view(&self.device, &self.config);
         self.debug_overlay
             .resize(&self.queue, new_size.width, new_size.height);
@@ -118,6 +201,55 @@ impl Renderer {
 
     pub fn update_debug_overlay(&mut self, fps: f32, tick_rate: f32) {
         self.debug_overlay.update(fps, tick_rate);
+    }
+
+    /// Load a GLB model from bytes and add it to the renderer.
+    ///
+    /// Returns the index of the loaded model.
+    pub fn load_model_from_bytes(&mut self, bytes: &[u8], label: &str) -> Result<usize> {
+        let model = Model::from_glb(
+            &self.device,
+            &self.queue,
+            bytes,
+            &self.texture_bind_group_layout,
+            &self.model_transform_bind_group_layout,
+            label,
+        )?;
+        let index = self.models.len();
+        self.models.push(model);
+        Ok(index)
+    }
+
+    /// Set the transform of a model.
+    pub fn set_model_transform(&mut self, index: usize, transform: glam::Mat4) {
+        if let Some(model) = self.models.get_mut(index) {
+            model.set_transform(&self.queue, transform);
+        }
+    }
+
+    /// Load a texture from bytes.
+    pub fn load_texture_from_bytes(&self, bytes: &[u8], label: &str) -> Result<Texture> {
+        Texture::from_bytes(&self.device, &self.queue, bytes, label)
+    }
+
+    /// Get the texture bind group layout (for custom materials).
+    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.texture_bind_group_layout
+    }
+
+    /// Get the camera bind group layout.
+    pub fn camera_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.camera_bind_group_layout
+    }
+
+    /// Get the number of loaded models.
+    pub fn model_count(&self) -> usize {
+        self.models.len()
+    }
+
+    /// Clear all loaded models.
+    pub fn clear_models(&mut self) {
+        self.models.clear();
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -142,8 +274,8 @@ impl Renderer {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
+                view: &self.msaa_view,
+                resolve_target: Some(target),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(CLEAR_COLOR),
                     store: wgpu::StoreOp::Store,
@@ -163,11 +295,20 @@ impl Renderer {
             multiview_mask: None,
         });
 
-        pass.set_pipeline(&self.pipeline);
+        // Draw basic colored geometry (legacy cube)
+        pass.set_pipeline(&self.basic_pipeline);
         pass.set_bind_group(0, &self.camera_bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+        // Draw textured models
+        if !self.models.is_empty() {
+            pass.set_pipeline(&self.model_pipeline);
+            for model in &self.models {
+                pass.draw_model(model, &self.camera_bind_group);
+            }
+        }
     }
 
     fn record_overlay_pass(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
@@ -289,7 +430,7 @@ impl Renderer {
         })
     }
 
-    fn create_pipeline(
+    fn create_basic_pipeline(
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
         camera_layout: &wgpu::BindGroupLayout,
@@ -302,7 +443,7 @@ impl Renderer {
         });
 
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
+            label: Some("Basic Render Pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: shader,
@@ -333,7 +474,67 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn create_model_pipeline(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        camera_layout: &wgpu::BindGroupLayout,
+        texture_layout: &wgpu::BindGroupLayout,
+        model_transform_layout: &wgpu::BindGroupLayout,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> wgpu::RenderPipeline {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Model Pipeline Layout"),
+            bind_group_layouts: &[camera_layout, texture_layout, model_transform_layout],
+            immediate_size: 0,
+        });
+
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Model Render Pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[ModelVertex::layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         })
@@ -355,6 +556,27 @@ impl Renderer {
         })
     }
 
+    fn create_msaa_view(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("MSAA Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MSAA_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        texture.create_view(&Default::default())
+    }
+
     fn create_depth_view(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
@@ -367,7 +589,7 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: MSAA_SAMPLE_COUNT,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

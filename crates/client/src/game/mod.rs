@@ -10,7 +10,7 @@ use crate::render::Camera;
 
 const BASE_MOVE_SPEED: f32 = 3.0;
 const SPRINT_MULTIPLIER: f32 = 3.0;
-const MOUSE_SENSITIVITY: f32 = 0.0002;
+const MOUSE_SENSITIVITY: f64 = 0.0002;
 
 pub struct GameState {
     pub input: Input,
@@ -51,8 +51,8 @@ impl GameState {
         let (dx, dy) = self.input.consume_mouse_delta();
         if dx != 0.0 || dy != 0.0 {
             self.camera.rotate(
-                dx as f32 * MOUSE_SENSITIVITY,
-                -dy as f32 * MOUSE_SENSITIVITY,
+                dx * MOUSE_SENSITIVITY,
+                -dy * MOUSE_SENSITIVITY,
             );
         }
     }

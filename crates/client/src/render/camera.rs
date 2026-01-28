@@ -2,8 +2,8 @@ use glam::{Mat4, Vec3};
 
 pub struct Camera {
     pub position: Vec3,
-    pub yaw: f32,
-    pub pitch: f32,
+    pub yaw: f64,
+    pub pitch: f64,
     pub aspect: f32,
     pub fov: f32,
     pub near: f32,
@@ -11,7 +11,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    const PITCH_LIMIT: f32 = 1.5;
+    const PITCH_LIMIT: f64 = 89.9999_f64.to_radians();
 
     pub fn new(aspect: f32) -> Self {
         Self {
@@ -20,31 +20,33 @@ impl Camera {
             pitch: 0.0,
             aspect,
             fov: 90.0_f32.to_radians(),
-            near: 0.1,
+            near: 0.01,
             far: 100.0,
         }
     }
 
     pub fn forward(&self) -> Vec3 {
+        let (yaw, pitch) = (self.yaw as f32, self.pitch as f32);
+
         Vec3::new(
-            self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            self.yaw.cos() * self.pitch.cos(),
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            yaw.cos() * pitch.cos(),
         )
         .normalize()
     }
 
     pub fn forward_xz(&self) -> Vec3 {
-        let (sin, cos) = self.yaw.sin_cos();
+        let (sin, cos) = (self.yaw as f32).sin_cos();
         Vec3::new(sin, 0.0, cos)
     }
 
     pub fn right_xz(&self) -> Vec3 {
-        let (sin, cos) = self.yaw.sin_cos();
+        let (sin, cos) = (self.yaw as f32).sin_cos();
         Vec3::new(cos, 0.0, -sin)
     }
 
-    pub fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32) {
+    pub fn rotate(&mut self, delta_yaw: f64, delta_pitch: f64) {
         self.yaw += delta_yaw;
         self.pitch = (self.pitch + delta_pitch).clamp(-Self::PITCH_LIMIT, Self::PITCH_LIMIT);
     }

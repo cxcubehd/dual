@@ -14,3 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 log = "0.4"
 glyphon = "0.10.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+gltf = "1.4"
+rust-embed = "8.11"
