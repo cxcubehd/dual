@@ -56,18 +56,28 @@ impl Camera {
         let proj = Mat4::perspective_lh(self.fov, self.aspect, self.near, self.far);
         proj * view
     }
+
+    /// View-projection matrix with translation removed (for skybox rendering).
+    pub fn view_projection_no_translation(&self) -> Mat4 {
+        // Create view matrix looking from origin
+        let view = Mat4::look_at_lh(Vec3::ZERO, self.forward(), Vec3::Y);
+        let proj = Mat4::perspective_lh(self.fov, self.aspect, self.near, self.far);
+        proj * view
+    }
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    view_proj_no_translation: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
     pub fn from_camera(camera: &Camera) -> Self {
         Self {
             view_proj: camera.view_projection().to_cols_array_2d(),
+            view_proj_no_translation: camera.view_projection_no_translation().to_cols_array_2d(),
         }
     }
 

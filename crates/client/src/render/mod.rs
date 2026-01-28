@@ -2,6 +2,7 @@ mod camera;
 mod cube;
 mod debug_overlay;
 mod model;
+mod skybox;
 mod texture;
 mod vertex;
 
@@ -14,6 +15,7 @@ pub use vertex::ModelVertex;
 use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
 use debug_overlay::DebugOverlay;
+use skybox::Skybox;
 use vertex::Vertex;
 
 use crate::assets::Assets;
@@ -63,6 +65,8 @@ pub struct Renderer {
     model_transform_bind_group_layout: wgpu::BindGroupLayout,
     // Models
     models: Vec<Model>,
+    // Skybox
+    skybox: Option<Skybox>,
     // Other
     msaa_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
@@ -130,6 +134,26 @@ impl Renderer {
 
         let msaa_view = Self::create_msaa_view(&device, &config);
         let depth_view = Self::create_depth_view(&device, &config);
+
+        // Load skybox
+        let skybox = match Skybox::load(
+            &device,
+            &queue,
+            &camera_bind_group_layout,
+            config.format,
+            "skybox/sky_24_cubemap_2k",
+            MSAA_SAMPLE_COUNT,
+        ) {
+            Ok(s) => {
+                log::info!("Skybox loaded successfully");
+                Some(s)
+            }
+            Err(e) => {
+                log::warn!("Failed to load skybox: {}", e);
+                None
+            }
+        };
+
         let debug_overlay = DebugOverlay::new(
             &adapter,
             &device,
@@ -155,6 +179,7 @@ impl Renderer {
             texture_bind_group_layout,
             model_transform_bind_group_layout,
             models: Vec::new(),
+            skybox,
             msaa_view,
             depth_view,
             debug_overlay,
@@ -294,6 +319,11 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+
+        // Draw skybox first (it writes at max depth with depth test LessEqual)
+        if let Some(ref skybox) = self.skybox {
+            skybox.draw(&mut pass, &self.camera_bind_group);
+        }
 
         // Draw basic colored geometry (legacy cube)
         pass.set_pipeline(&self.basic_pipeline);
