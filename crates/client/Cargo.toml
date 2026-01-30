@@ -1,21 +1,30 @@
 [package]
 name = "dual"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dual"
+path = "src/main.rs"
 
 [dependencies]
-glam = { version = "0.31.0", features = ["serde"] }
-wgpu = "28.0.0"
-winit = "0.30.12"
-tokio = { version = "1", features = ["full"] }
-env_logger = "0.11.8"
-anyhow = "1.0.100"
-serde = { version = "1.0", features = ["derive"] }
-rkyv = { version = "0.8", features = ["bytecheck"] }
-log = "0.4"
-glyphon = "0.10.0"
-bytemuck = { version = "1.24", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-gltf = "1.4"
-rust-embed = "8.11"
-bitflags = "2.10.0"
+dual-game.workspace = true
+glam.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+rkyv.workspace = true
+glyphon.workspace = true
+bytemuck.workspace = true
+image.workspace = true
+gltf.workspace = true
+rust-embed.workspace = true
+bitflags.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true

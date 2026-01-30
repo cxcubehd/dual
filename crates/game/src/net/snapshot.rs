@@ -195,6 +195,10 @@ impl World {
         self.entities.values_mut()
     }
 
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
     pub fn generate_snapshot(&self, last_command_ack: u32) -> WorldSnapshot {
         let mut snapshot = WorldSnapshot::new(self.tick, self.server_time_ms());
         snapshot.last_command_ack = last_command_ack;
@@ -227,7 +231,6 @@ impl World {
 #[derive(Debug)]
 pub struct SnapshotBuffer {
     snapshots: Vec<Option<WorldSnapshot>>,
-    write_pos: usize,
     capacity: usize,
 }
 
@@ -235,20 +238,20 @@ impl SnapshotBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             snapshots: (0..capacity).map(|_| None).collect(),
-            write_pos: 0,
             capacity,
         }
     }
 
     pub fn push(&mut self, snapshot: WorldSnapshot) {
-        self.snapshots[self.write_pos] = Some(snapshot);
-        self.write_pos = (self.write_pos + 1) % self.capacity;
+        let index = (snapshot.tick as usize) % self.capacity;
+        self.snapshots[index] = Some(snapshot);
     }
 
     pub fn get_by_tick(&self, tick: u32) -> Option<&WorldSnapshot> {
-        self.snapshots
-            .iter()
-            .find_map(|s| s.as_ref().filter(|snap| snap.tick == tick))
+        let index = (tick as usize) % self.capacity;
+        self.snapshots[index]
+            .as_ref()
+            .filter(|snap| snap.tick == tick)
     }
 
     pub fn get_interpolation_pair(&self) -> Option<(&WorldSnapshot, &WorldSnapshot)> {
@@ -270,15 +273,6 @@ impl SnapshotBuffer {
             .iter()
             .filter_map(|s| s.as_ref())
             .max_by_key(|s| s.tick)
-    }
-
-    pub fn get_relative(&self, offset: usize) -> Option<&WorldSnapshot> {
-        let mut snapshots: Vec<&WorldSnapshot> =
-            self.snapshots.iter().filter_map(|s| s.as_ref()).collect();
-
-        snapshots.sort_by_key(|s| std::cmp::Reverse(s.tick));
-
-        snapshots.get(offset).copied()
     }
 
     pub fn clear(&mut self) {
@@ -315,20 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_buffer() {
-        let mut buffer = SnapshotBuffer::new(4);
+    fn test_snapshot_buffer_o1_lookup() {
+        let mut buffer = SnapshotBuffer::new(64);
 
-        for tick in 0..6 {
+        for tick in 0..100 {
             buffer.push(WorldSnapshot::new(tick, tick as u64 * 50));
         }
 
-        assert!(buffer.get_by_tick(0).is_none());
-        assert!(buffer.get_by_tick(1).is_none());
-        assert!(buffer.get_by_tick(2).is_some());
-        assert!(buffer.get_by_tick(5).is_some());
-
-        let latest = buffer.latest().unwrap();
-        assert_eq!(latest.tick, 5);
+        assert!(buffer.get_by_tick(50).is_some());
+        assert_eq!(buffer.get_by_tick(50).unwrap().tick, 50);
+        assert!(buffer.get_by_tick(30).is_none());
     }
 
     #[test]

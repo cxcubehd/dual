@@ -1,68 +1,104 @@
-# dual
+# Dual
 
 ![Screenshot](image.png)
 
-> **⚠️ Work In Progress**: This project is currently under active development. Features and APIs are subject to change.
+Custom multiplayer FPS engine written in Rust. Server-authoritative architecture inspired by Quake and Counter-Strike.
 
-A "barebone" 3D game demo written in Rust, featuring a custom-built engine in the style of old-school shooters like Quake or CS 1.6.
+**Status:** Pre-alpha. Core rendering and networking implemented, integration in progress.
 
-This project deliberately avoids using general-purpose game engines (like Bevy or Godot) in favor of a low-level implementation using `wgpu` for graphics and `winit` for window management. It serves as a study in building a specialized 3D renderer and game loop from scratch.
+## Architecture
 
-## ✨ Features
+Server-authoritative multiplayer with client-side prediction:
 
-- **Custom Graphics Engine**: Built on top of modern `wgpu` (WebGPU) architecture.
-- **Old-school Movement**: Classic FPS controls with "noclip"-style free flying camera.
-- **High Performance**: Written in pure Rust with minimal overhead.
-- **Raw Input**: Native keyboard and mouse handling via `winit`.
-- **Cross-Platform**: Runs on Linux (Wayland/X11), Windows, and macOS (Vulkan/Metal/DX12).
+| Component | Description |
+|-----------|-------------|
+| Server | Authoritative simulation, snapshot broadcasting |
+| Client | Prediction, reconciliation, entity interpolation |
+| Protocol | UDP with reliability layer, zero-copy serialization |
 
-## 🎮 Controls
+See [`plan/ARCHITECTURE.md`](plan/ARCHITECTURE.md) for details.
 
-| Action | Key / Input |
-|:---|:---|
-| **Move** | `W`, `A`, `S`, `D` |
-| **Fly Up** | `Space` |
-| **Fly Down** | `Ctrl` |
-| **Look** | Mouse |
-| **Sprint** | `Shift` (Hold) |
-| **Release Mouse** | `Esc` |
-| **Toggle Fullscreen** | `F11` |
-| **Quit** | `Shift` + `F12` |
+## Tech Stack
 
-## 🛠️ Tech Stack
+| Component | Library |
+|-----------|---------|
+| Graphics | wgpu 28.0 (WebGPU) |
+| Windowing | winit 0.30 |
+| Math | glam 0.31 |
+| Serialization | rkyv 0.8 (zero-copy) |
+| Async Runtime | tokio |
+| Physics | Rapier 3D 0.32 (planned) |
 
-- **[Rust](https://www.rust-lang.org/)**: Systems programming language.
-- **[wgpu](https://wgpu.rs/)**: Safe, portable, cross-platform graphics API (WebGPU).
-- **[winit](https://github.com/rust-windowing/winit)**: Window handling and input events.
-- **[glam](https://github.com/bitshifter/glam-rs)**: Fast linear algebra libraries (vectors, matrices).
-- **[tokio](https://tokio.rs/)**: Asynchronous runtime.
+## Project Structure
 
-## 🚀 Getting Started
+```
+crates/
+├── client/          # Game client
+│   ├── src/
+│   │   ├── game/    # Input, state management
+│   │   ├── net/     # Networking, protocol
+│   │   ├── render/  # Graphics, camera
+│   │   └── debug/   # Stats, overlays
+│   └── assets/      # Models, textures, shaders
+└── demo/            # Serialization experiments
+```
 
-Ensure you have [Rust installed](https://rustup.rs/).
+## Controls
 
-1. **Clone the repository:**
+| Action | Key |
+|--------|-----|
+| Move | W A S D |
+| Fly Up | Space |
+| Fly Down | Ctrl |
+| Look | Mouse |
+| Sprint | Shift |
+| Release Mouse | Esc |
+| Fullscreen | F11 |
+| Quit | Shift + F12 |
 
-   ```bash
-   git clone https://github.com/your-username/dual.git
-   cd dual
-   ```
+## Building
 
-2. **Run the project:**
+Requires Rust 1.75+.
 
-   ```bash
-   cargo run --release
-   ```
+```bash
+# Development
+cargo run -p client
 
-   *Note: First compilation may take a moment to build dependencies.*
+# Release
+cargo run -p client --release
+```
 
-3. **Development Build:**
+## Development
 
-   For faster compile times during development:
-   ```bash
-   cargo run
-   ```
+### Code Style
 
-## 📝 License
+Follow [`AGENTS.md`](AGENTS.md) for coding guidelines. Key points:
+- Self-documenting code, minimal comments
+- Docstrings for public APIs
+- Strong typing for domain concepts
+- Minimize allocations in hot paths
 
-This project is open source and available under the MIT License.
+### Before Committing
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo build --release
+cargo test
+```
+
+## Roadmap
+
+See [`plan/ROADMAP.md`](plan/ROADMAP.md).
+
+| Phase | Focus |
+|-------|-------|
+| 1 | Network integration |
+| 2 | Client prediction |
+| 3 | Physics (Rapier 3D) |
+| 4 | Gameplay prototype |
+| 5 | Polish |
+
+## License
+
+MIT

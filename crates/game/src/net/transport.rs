@@ -1,12 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::protocol::{
-    MAX_PACKET_SIZE, PROTOCOL_MAGIC, Packet, PacketHeader, PacketType, sequence_greater_than,
+    sequence_greater_than, Packet, PacketHeader, PacketType, MAX_PACKET_SIZE, PROTOCOL_MAGIC,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,14 +31,14 @@ pub struct NetworkStats {
 }
 
 #[derive(Debug, Clone)]
-struct PendingPacket {
-    sequence: u32,
-    send_time: Instant,
-    acked: bool,
+pub struct PendingPacket {
+    pub sequence: u32,
+    pub send_time: Instant,
+    pub acked: bool,
 }
 
 #[derive(Debug)]
-struct AckTracker {
+pub struct AckTracker {
     pending: VecDeque<PendingPacket>,
     max_pending: usize,
     srtt: f32,
@@ -46,7 +46,7 @@ struct AckTracker {
 }
 
 impl AckTracker {
-    fn new(max_pending: usize) -> Self {
+    pub fn new(max_pending: usize) -> Self {
         Self {
             pending: VecDeque::with_capacity(max_pending),
             max_pending,
@@ -55,7 +55,7 @@ impl AckTracker {
         }
     }
 
-    fn track_packet(&mut self, sequence: u32) {
+    pub fn track_packet(&mut self, sequence: u32) {
         while self.pending.len() >= self.max_pending {
             self.pending.pop_front();
         }
@@ -67,7 +67,7 @@ impl AckTracker {
         });
     }
 
-    fn process_ack(&mut self, ack: u32, ack_bitfield: u32) -> Vec<u32> {
+    pub fn process_ack(&mut self, ack: u32, ack_bitfield: u32) -> Vec<u32> {
         let mut acked_sequences = Vec::new();
         let mut rtt_samples = Vec::new();
         let now = Instant::now();
@@ -103,7 +103,7 @@ impl AckTracker {
             self.update_rtt(rtt);
         }
 
-        while self.pending.front().map(|p| p.acked).unwrap_or(false) {
+        while self.pending.front().is_some_and(|p| p.acked) {
             self.pending.pop_front();
         }
 
@@ -119,7 +119,15 @@ impl AckTracker {
         self.srtt = (1.0 - ALPHA) * self.srtt + ALPHA * rtt;
     }
 
-    fn get_unacked_count(&self) -> usize {
+    pub fn srtt(&self) -> f32 {
+        self.srtt
+    }
+
+    pub fn rtt_var(&self) -> f32 {
+        self.rtt_var
+    }
+
+    pub fn unacked_count(&self) -> usize {
         self.pending.iter().filter(|p| !p.acked).count()
     }
 }
@@ -132,8 +140,14 @@ pub struct ReceiveTracker {
     max_recent: usize,
 }
 
+impl Default for ReceiveTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReceiveTracker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             last_received: 0,
             received_bitfield: 0,
@@ -142,7 +156,7 @@ impl ReceiveTracker {
         }
     }
 
-    fn record_received(&mut self, sequence: u32) -> bool {
+    pub fn record_received(&mut self, sequence: u32) -> bool {
         if self.recent_sequences.contains(&sequence) {
             return false;
         }
@@ -170,9 +184,189 @@ impl ReceiveTracker {
         true
     }
 
-    fn get_ack_data(&self) -> (u32, u32) {
+    pub fn ack_data(&self) -> (u32, u32) {
         (self.last_received, self.received_bitfield)
     }
+}
+
+#[derive(Debug)]
+pub struct ClientConnection {
+    pub addr: std::net::SocketAddr,
+    pub client_id: u32,
+    pub state: ConnectionState,
+    pub client_salt: u64,
+    pub server_salt: u64,
+    pub last_command_ack: u32,
+    pub last_receive_time: Instant,
+    pub entity_id: Option<u32>,
+    pub receive_tracker: ReceiveTracker,
+    pub send_sequence: u32,
+    pub lobby_id: Option<u64>,
+}
+
+impl ClientConnection {
+    pub fn new(addr: SocketAddr, client_id: u32, client_salt: u64) -> Self {
+        Self {
+            addr,
+            client_id,
+            state: ConnectionState::Connecting,
+            client_salt,
+            server_salt: rand_u64(),
+            last_command_ack: 0,
+            last_receive_time: Instant::now(),
+            entity_id: None,
+            receive_tracker: ReceiveTracker::new(),
+            send_sequence: 0,
+            lobby_id: None,
+        }
+    }
+
+    pub fn combined_salt(&self) -> u64 {
+        self.client_salt ^ self.server_salt
+    }
+
+    pub fn is_timed_out(&self, timeout: Duration) -> bool {
+        self.last_receive_time.elapsed() > timeout
+    }
+
+    pub fn touch(&mut self) {
+        self.last_receive_time = Instant::now();
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectionManager {
+    clients_by_addr: HashMap<std::net::SocketAddr, u32>,
+    clients: HashMap<u32, ClientConnection>,
+    next_client_id: u32,
+    max_clients: usize,
+    timeout: Duration,
+}
+
+impl ConnectionManager {
+    pub fn new(max_clients: usize) -> Self {
+        Self {
+            clients_by_addr: HashMap::new(),
+            clients: HashMap::new(),
+            next_client_id: 1,
+            max_clients,
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    pub fn get_or_create_pending(
+        &mut self,
+        addr: SocketAddr,
+        client_salt: u64,
+    ) -> Result<&mut ClientConnection, &'static str> {
+        if let Some(&client_id) = self.clients_by_addr.get(&addr) {
+            return Ok(self.clients.get_mut(&client_id).unwrap());
+        }
+
+        if self.clients.len() >= self.max_clients {
+            return Err("Server full");
+        }
+
+        let client_id = self.next_client_id;
+        self.next_client_id += 1;
+
+        let connection = ClientConnection::new(addr, client_id, client_salt);
+        self.clients.insert(client_id, connection);
+        self.clients_by_addr.insert(addr, client_id);
+
+        Ok(self.clients.get_mut(&client_id).unwrap())
+    }
+
+    pub fn get_by_addr(&self, addr: &std::net::SocketAddr) -> Option<&ClientConnection> {
+        self.clients_by_addr
+            .get(addr)
+            .and_then(|id| self.clients.get(id))
+    }
+
+    pub fn get_by_addr_mut(
+        &mut self,
+        addr: &std::net::SocketAddr,
+    ) -> Option<&mut ClientConnection> {
+        if let Some(&id) = self.clients_by_addr.get(addr) {
+            self.clients.get_mut(&id)
+        } else {
+            None
+        }
+    }
+
+    pub fn get(&self, client_id: u32) -> Option<&ClientConnection> {
+        self.clients.get(&client_id)
+    }
+
+    pub fn get_mut(&mut self, client_id: u32) -> Option<&mut ClientConnection> {
+        self.clients.get_mut(&client_id)
+    }
+
+    pub fn remove(&mut self, client_id: u32) -> Option<ClientConnection> {
+        if let Some(conn) = self.clients.remove(&client_id) {
+            self.clients_by_addr.remove(&conn.addr);
+            Some(conn)
+        } else {
+            None
+        }
+    }
+
+    pub fn remove_by_addr(&mut self, addr: &std::net::SocketAddr) -> Option<ClientConnection> {
+        if let Some(client_id) = self.clients_by_addr.remove(addr) {
+            self.clients.remove(&client_id)
+        } else {
+            None
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ClientConnection> {
+        self.clients.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ClientConnection> {
+        self.clients.values_mut()
+    }
+
+    pub fn cleanup_timed_out(&mut self) -> Vec<u32> {
+        let timed_out: Vec<u32> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.is_timed_out(self.timeout))
+            .map(|(&id, _)| id)
+            .collect();
+
+        for id in &timed_out {
+            self.remove(*id);
+        }
+
+        timed_out
+    }
+
+    pub fn connected_count(&self) -> usize {
+        self.clients
+            .values()
+            .filter(|c| c.state == ConnectionState::Connected)
+            .count()
+    }
+
+    pub fn total_count(&self) -> usize {
+        self.clients.len()
+    }
+}
+
+fn rand_u64() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+    hasher.finish()
 }
 
 pub struct NetworkEndpoint {
@@ -273,7 +467,7 @@ impl NetworkEndpoint {
         let sequence = self.send_sequence;
         self.send_sequence = self.send_sequence.wrapping_add(1);
 
-        let (ack, ack_bitfield) = self.receive_tracker.get_ack_data();
+        let (ack, ack_bitfield) = self.receive_tracker.ack_data();
         let header = PacketHeader::new(sequence, ack, ack_bitfield);
 
         Packet::new(header, payload)
@@ -315,11 +509,11 @@ impl NetworkEndpoint {
 
                             self.stats.packets_received += 1;
                             self.stats.bytes_received += size as u64;
-                            self.stats.rtt_ms = self.ack_tracker.srtt;
-                            self.stats.rtt_variance = self.ack_tracker.rtt_var;
+                            self.stats.rtt_ms = self.ack_tracker.srtt();
+                            self.stats.rtt_variance = self.ack_tracker.rtt_var();
 
                             if self.stats.packets_sent > 0 {
-                                let unacked = self.ack_tracker.get_unacked_count() as f32;
+                                let unacked = self.ack_tracker.unacked_count() as f32;
                                 let sent = self.stats.packets_sent as f32;
                                 self.stats.packet_loss_percent = (unacked / sent.max(1.0)) * 100.0;
                             }
@@ -364,181 +558,6 @@ impl NetworkEndpoint {
     }
 }
 
-#[derive(Debug)]
-pub struct ClientConnection {
-    pub addr: SocketAddr,
-    pub client_id: u32,
-    pub state: ConnectionState,
-    pub client_salt: u64,
-    pub server_salt: u64,
-    pub last_command_ack: u32,
-    pub last_receive_time: Instant,
-    pub entity_id: Option<u32>,
-    pub receive_tracker: ReceiveTracker,
-    pub send_sequence: u32,
-}
-
-impl ClientConnection {
-    pub fn new(addr: SocketAddr, client_id: u32, client_salt: u64) -> Self {
-        Self {
-            addr,
-            client_id,
-            state: ConnectionState::Connecting,
-            client_salt,
-            server_salt: rand_u64(),
-            last_command_ack: 0,
-            last_receive_time: Instant::now(),
-            entity_id: None,
-            receive_tracker: ReceiveTracker::new(),
-            send_sequence: 0,
-        }
-    }
-
-    pub fn combined_salt(&self) -> u64 {
-        self.client_salt ^ self.server_salt
-    }
-
-    pub fn is_timed_out(&self, timeout: Duration) -> bool {
-        self.last_receive_time.elapsed() > timeout
-    }
-
-    pub fn touch(&mut self) {
-        self.last_receive_time = Instant::now();
-    }
-}
-
-fn rand_u64() -> u64 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    let state = RandomState::new();
-    let mut hasher = state.build_hasher();
-    hasher.write_u64(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64,
-    );
-    hasher.finish()
-}
-
-#[derive(Debug)]
-pub struct ConnectionManager {
-    clients_by_addr: HashMap<SocketAddr, u32>,
-    clients: HashMap<u32, ClientConnection>,
-    next_client_id: u32,
-    max_clients: usize,
-    timeout: Duration,
-}
-
-impl ConnectionManager {
-    pub fn new(max_clients: usize) -> Self {
-        Self {
-            clients_by_addr: HashMap::new(),
-            clients: HashMap::new(),
-            next_client_id: 1,
-            max_clients,
-            timeout: Duration::from_secs(10),
-        }
-    }
-
-    pub fn get_or_create_pending(
-        &mut self,
-        addr: SocketAddr,
-        client_salt: u64,
-    ) -> Result<&mut ClientConnection, &'static str> {
-        if let Some(&client_id) = self.clients_by_addr.get(&addr) {
-            return Ok(self.clients.get_mut(&client_id).unwrap());
-        }
-
-        if self.clients.len() >= self.max_clients {
-            return Err("Server full");
-        }
-
-        let client_id = self.next_client_id;
-        self.next_client_id += 1;
-
-        let connection = ClientConnection::new(addr, client_id, client_salt);
-        self.clients.insert(client_id, connection);
-        self.clients_by_addr.insert(addr, client_id);
-
-        Ok(self.clients.get_mut(&client_id).unwrap())
-    }
-
-    pub fn get_by_addr(&self, addr: &SocketAddr) -> Option<&ClientConnection> {
-        self.clients_by_addr
-            .get(addr)
-            .and_then(|id| self.clients.get(id))
-    }
-
-    pub fn get_by_addr_mut(&mut self, addr: &SocketAddr) -> Option<&mut ClientConnection> {
-        if let Some(&id) = self.clients_by_addr.get(addr) {
-            self.clients.get_mut(&id)
-        } else {
-            None
-        }
-    }
-
-    pub fn get(&self, client_id: u32) -> Option<&ClientConnection> {
-        self.clients.get(&client_id)
-    }
-
-    pub fn get_mut(&mut self, client_id: u32) -> Option<&mut ClientConnection> {
-        self.clients.get_mut(&client_id)
-    }
-
-    pub fn remove(&mut self, client_id: u32) -> Option<ClientConnection> {
-        if let Some(conn) = self.clients.remove(&client_id) {
-            self.clients_by_addr.remove(&conn.addr);
-            Some(conn)
-        } else {
-            None
-        }
-    }
-
-    pub fn remove_by_addr(&mut self, addr: &SocketAddr) -> Option<ClientConnection> {
-        if let Some(client_id) = self.clients_by_addr.remove(addr) {
-            self.clients.remove(&client_id)
-        } else {
-            None
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &ClientConnection> {
-        self.clients.values()
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ClientConnection> {
-        self.clients.values_mut()
-    }
-
-    pub fn cleanup_timed_out(&mut self) -> Vec<u32> {
-        let timed_out: Vec<u32> = self
-            .clients
-            .iter()
-            .filter(|(_, c)| c.is_timed_out(self.timeout))
-            .map(|(&id, _)| id)
-            .collect();
-
-        for id in &timed_out {
-            self.remove(*id);
-        }
-
-        timed_out
-    }
-
-    pub fn client_count(&self) -> usize {
-        self.clients
-            .values()
-            .filter(|c| c.state == ConnectionState::Connected)
-            .count()
-    }
-
-    pub fn total_count(&self) -> usize {
-        self.clients.len()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,26 +566,24 @@ mod tests {
     fn test_receive_tracker_bitfield() {
         let mut tracker = ReceiveTracker::new();
 
-        // Receive packets 1, 2, 3
         tracker.record_received(1);
         tracker.record_received(2);
         tracker.record_received(3);
 
-        let (ack, bitfield) = tracker.get_ack_data();
+        let (ack, bitfield) = tracker.ack_data();
         assert_eq!(ack, 3);
-        assert_eq!(bitfield & 0b11, 0b11); // Packets 1 and 2 in bitfield
+        assert_eq!(bitfield & 0b11, 0b11);
     }
 
     #[test]
     fn test_receive_tracker_out_of_order() {
         let mut tracker = ReceiveTracker::new();
 
-        // Receive out of order
         tracker.record_received(3);
         tracker.record_received(1);
         tracker.record_received(2);
 
-        let (ack, bitfield) = tracker.get_ack_data();
+        let (ack, bitfield) = tracker.ack_data();
         assert_eq!(ack, 3);
         assert_eq!(bitfield & 0b11, 0b11);
     }
@@ -576,7 +593,7 @@ mod tests {
         let mut tracker = ReceiveTracker::new();
 
         assert!(tracker.record_received(1));
-        assert!(!tracker.record_received(1)); // Duplicate
+        assert!(!tracker.record_received(1));
         assert!(tracker.record_received(2));
     }
 
@@ -589,7 +606,6 @@ mod tests {
 
         tracker.process_ack(1, 0);
 
-        // RTT should be updated
-        assert!(tracker.srtt > 0.0);
+        assert!(tracker.srtt() > 0.0);
     }
 }

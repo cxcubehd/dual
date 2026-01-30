@@ -1,8 +1,10 @@
-use rkyv::{Archive, Deserialize, Serialize, rancor};
+use rkyv::{rancor, Archive, Deserialize, Serialize};
 
 pub const MAX_PACKET_SIZE: usize = 1200;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const PROTOCOL_MAGIC: u32 = 0x4455414C;
+pub const DEFAULT_PORT: u16 = 27015;
+pub const DEFAULT_TICK_RATE: u32 = 60;
 
 const SEQUENCE_WRAP_THRESHOLD: u32 = u32::MAX / 2;
 
@@ -41,16 +43,54 @@ pub fn sequence_greater_than(s1: u32, s2: u32) -> bool {
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum PacketType {
-    ConnectionRequest { client_salt: u64 },
-    ConnectionChallenge { server_salt: u64, challenge: u64 },
-    ChallengeResponse { combined_salt: u64 },
-    ConnectionAccepted { client_id: u32 },
-    ConnectionDenied { reason: String },
+    ConnectionRequest {
+        client_salt: u64,
+    },
+    ConnectionChallenge {
+        server_salt: u64,
+        challenge: u64,
+    },
+    ChallengeResponse {
+        combined_salt: u64,
+    },
+    ConnectionAccepted {
+        client_id: u32,
+    },
+    ConnectionDenied {
+        reason: String,
+    },
     ClientCommand(ClientCommand),
     WorldSnapshot(WorldSnapshot),
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
+    Ping {
+        timestamp: u64,
+    },
+    Pong {
+        timestamp: u64,
+    },
     Disconnect,
+    LobbyList(Vec<LobbyInfo>),
+    LobbyJoin {
+        lobby_id: u64,
+    },
+    LobbyLeave,
+    QueueJoin,
+    QueueLeave,
+    QueueStatus {
+        position: u32,
+        estimated_wait_secs: u32,
+    },
+}
+
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct LobbyInfo {
+    pub id: u64,
+    pub name: String,
+    pub player_count: u8,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub map_name: String,
+    pub game_mode: String,
 }
 
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
@@ -215,22 +255,13 @@ pub struct Packet {
     pub payload: PacketType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PacketError {
-    SerializeError(rancor::Error),
-    DeserializeError(rancor::Error),
+    #[error("serialization failed: {0}")]
+    Serialize(rancor::Error),
+    #[error("deserialization failed: {0}")]
+    Deserialize(rancor::Error),
 }
-
-impl std::fmt::Display for PacketError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PacketError::SerializeError(e) => write!(f, "Serialization error: {}", e),
-            PacketError::DeserializeError(e) => write!(f, "Deserialization error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for PacketError {}
 
 impl Packet {
     pub fn new(header: PacketHeader, payload: PacketType) -> Self {
@@ -240,15 +271,15 @@ impl Packet {
     pub fn serialize(&self) -> Result<Vec<u8>, PacketError> {
         rkyv::to_bytes::<rancor::Error>(self)
             .map(|aligned| aligned.into_vec())
-            .map_err(PacketError::SerializeError)
+            .map_err(PacketError::Serialize)
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, PacketError> {
-        rkyv::from_bytes::<Self, rancor::Error>(data).map_err(PacketError::DeserializeError)
+        rkyv::from_bytes::<Self, rancor::Error>(data).map_err(PacketError::Deserialize)
     }
 
     pub fn access_archived(data: &[u8]) -> Result<&ArchivedPacket, PacketError> {
-        rkyv::access::<ArchivedPacket, rancor::Error>(data).map_err(PacketError::DeserializeError)
+        rkyv::access::<ArchivedPacket, rancor::Error>(data).map_err(PacketError::Deserialize)
     }
 }
 

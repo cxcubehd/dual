@@ -1,0 +1,13 @@
+[package]
+name = "dual-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+rkyv.workspace = true
+bitflags.workspace = true
+log.workspace = true
+thiserror.workspace = true

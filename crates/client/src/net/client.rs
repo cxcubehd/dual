@@ -1,12 +1,15 @@
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dual_game::{
+    ClientCommand, ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType,
+    WorldSnapshot,
+};
+
 use super::interpolation::{InterpolatedEntity, InterpolationEngine, JitterBufferConfig};
-use super::protocol::{ClientCommand, Packet, PacketType, WorldSnapshot};
-use super::transport::{ConnectionState, NetworkEndpoint, NetworkStats};
 
 #[derive(Debug, Clone)]
 pub struct ClientConfig {

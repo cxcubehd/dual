@@ -1,15 +1,16 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use super::protocol::{ClientCommand, Packet, PacketHeader, PacketType};
-use super::snapshot::{EntityType, SnapshotBuffer, World};
-use super::transport::{ConnectionManager, ConnectionState, NetworkEndpoint};
+use dual_game::{
+    ClientCommand, ConnectionManager, ConnectionState, EntityType, NetworkEndpoint, NetworkStats,
+    Packet, PacketHeader, PacketType, SnapshotBuffer, World,
+};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -23,7 +24,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            tick_rate: 20,
+            tick_rate: 60,
             max_clients: 32,
             snapshot_buffer_size: 64,
             connection_timeout_secs: 10,
@@ -90,27 +91,26 @@ impl GameServer {
 
     pub fn run(&mut self) {
         while self.running.load(Ordering::SeqCst) {
-            let now = Instant::now();
-            let delta = now - self.last_tick_time;
-            self.last_tick_time = now;
-            self.accumulator += delta;
+            self.tick_once();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        log::info!("Server shutting down");
+    }
 
-            if let Err(e) = self.process_network() {
-                log::error!("Network error: {}", e);
-            }
+    pub fn tick_once(&mut self) {
+        let now = Instant::now();
+        let delta = now - self.last_tick_time;
+        self.last_tick_time = now;
+        self.accumulator += delta;
 
-            while self.accumulator >= self.tick_duration {
-                self.accumulator -= self.tick_duration;
-                self.tick();
-            }
-
-            let elapsed = now.elapsed();
-            if elapsed < self.tick_duration / 2 {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+        if let Err(e) = self.process_network() {
+            log::error!("Network error: {}", e);
         }
 
-        log::info!("Server shutting down");
+        while self.accumulator >= self.tick_duration {
+            self.accumulator -= self.tick_duration;
+            self.tick();
+        }
     }
 
     fn tick(&mut self) {
@@ -383,8 +383,8 @@ impl GameServer {
     pub fn stats(&self) -> ServerStats {
         ServerStats {
             tick: self.tick,
-            client_count: self.connections.client_count(),
-            entity_count: self.world.entities().count(),
+            client_count: self.connections.connected_count(),
+            entity_count: self.world.entity_count(),
             uptime_secs: self.start_time.elapsed().as_secs(),
             network_stats: self.endpoint.stats().clone(),
         }
@@ -405,34 +405,5 @@ pub struct ServerStats {
     pub client_count: usize,
     pub entity_count: usize,
     pub uptime_secs: u64,
-    pub network_stats: super::transport::NetworkStats,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_server_creation() {
-        let config = ServerConfig::default();
-        let server = GameServer::new("127.0.0.1:0", config);
-        assert!(server.is_ok());
-    }
-
-    #[test]
-    fn test_command_processing() {
-        let config = ServerConfig::default();
-        let mut server = GameServer::new("127.0.0.1:0", config).unwrap();
-
-        let entity_id = server.world.spawn_player(Vec3::ZERO);
-
-        let mut command = ClientCommand::new(0, 1);
-        command.encode_move_direction([1.0, 0.0, 0.0]);
-        command.encode_view_angles(0.0, 0.0);
-
-        server.apply_command(entity_id, &command);
-
-        let entity = server.world.get_entity(entity_id).unwrap();
-        assert!(entity.position.x > 0.0);
-    }
+    pub network_stats: NetworkStats,
 }

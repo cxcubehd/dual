@@ -1,0 +1,20 @@
+[package]
+name = "dual-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dual-server"
+path = "src/main.rs"
+
+[dependencies]
+dual-game.workspace = true
+glam.workspace = true
+tokio.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
