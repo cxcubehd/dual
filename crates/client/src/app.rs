@@ -8,12 +8,14 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::debug::DebugStats;
 use crate::game::GameState;
+use crate::net::NetworkClient;
 use crate::render::Renderer;
 
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     game: Option<GameState>,
+    network_client: Option<NetworkClient>,
     debug_stats: DebugStats,
     fullscreen: bool,
 }
@@ -30,6 +32,18 @@ impl App {
             window: None,
             renderer: None,
             game: None,
+            network_client: None,
+            debug_stats: DebugStats::new(),
+            fullscreen: false,
+        }
+    }
+
+    pub fn with_network_client(client: Option<NetworkClient>) -> Self {
+        Self {
+            window: None,
+            renderer: None,
+            game: None,
+            network_client: client,
             debug_stats: DebugStats::new(),
             fullscreen: false,
         }
@@ -101,6 +115,16 @@ impl App {
         let dt = game.update();
         self.debug_stats.record_frame(dt);
         self.debug_stats.record_tick();
+
+        // Update network client if connected
+        if let Some(client) = &mut self.network_client {
+            let input_state = game
+                .input
+                .to_net_input(game.camera.yaw as f32, game.camera.pitch as f32);
+            if let Err(e) = client.update(dt, Some(&input_state)) {
+                log::error!("Network error: {}", e);
+            }
+        }
 
         renderer.update_camera(&game.camera);
         renderer.update_debug_overlay(self.debug_stats.fps(), self.debug_stats.tick_rate());
