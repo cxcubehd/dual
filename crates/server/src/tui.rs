@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use dual::PacketLossSimulation;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
-use ratatui::Frame;
 
 use crate::server::ServerStats;
 

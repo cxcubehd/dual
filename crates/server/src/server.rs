@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
@@ -22,6 +22,33 @@ struct QueuedCommand {
     command: ClientCommand,
 }
 
+#[derive(Debug)]
+struct DelayedPacket {
+    send_time: Instant,
+    packet: Packet,
+    addr: SocketAddr,
+}
+
+impl PartialEq for DelayedPacket {
+    fn eq(&self, other: &Self) -> bool {
+        self.send_time == other.send_time
+    }
+}
+
+impl Eq for DelayedPacket {}
+
+impl PartialOrd for DelayedPacket {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DelayedPacket {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.send_time.cmp(&self.send_time)
+    }
+}
+
 pub struct GameServer {
     endpoint: NetworkEndpoint,
     connections: ConnectionManager,
@@ -29,6 +56,7 @@ pub struct GameServer {
     world: World,
     snapshot_history: SnapshotBuffer,
     command_queue: VecDeque<QueuedCommand>,
+    delayed_packets: BinaryHeap<DelayedPacket>,
     tick: u32,
     tick_duration: Duration,
     last_tick_time: Instant,
@@ -56,6 +84,7 @@ impl GameServer {
             world: World::new(),
             snapshot_history: SnapshotBuffer::new(config.snapshot_buffer_size),
             command_queue: VecDeque::new(),
+            delayed_packets: BinaryHeap::new(),
             tick: 0,
             tick_duration,
             last_tick_time: Instant::now(),
@@ -126,9 +155,55 @@ impl GameServer {
             });
         }
 
+        self.process_delayed_packets();
+
         while self.accumulator >= self.tick_duration {
             self.accumulator -= self.tick_duration;
             self.tick();
+        }
+    }
+
+    fn process_delayed_packets(&mut self) {
+        let now = Instant::now();
+        while let Some(packet) = self.delayed_packets.peek() {
+            if packet.send_time <= now {
+                let DelayedPacket { packet, addr, .. } = self.delayed_packets.pop().unwrap();
+                if let Err(e) = self.endpoint.send_to(&packet, addr) {
+                    self.pending_events.push_back(ServerEvent::Error {
+                        message: format!("Failed to send delayed packet to {}: {}", addr, e),
+                    });
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn send_packet_simulated(&mut self, packet: Packet, addr: SocketAddr) -> io::Result<()> {
+        let mut delay = 0;
+        let mut should_drop = false;
+
+        if let Some(client) = self.connections.get_by_addr(&addr) {
+            should_drop = client.packet_loss_sim.should_drop();
+            delay = client.packet_loss_sim.delay_ms();
+        } else if let Some(ref sim) = self.config.global_packet_loss {
+            should_drop = sim.should_drop();
+            delay = sim.delay_ms();
+        }
+
+        if should_drop {
+            return Ok(());
+        }
+
+        if delay == 0 {
+            self.endpoint.send_to(&packet, addr).map(|_| ())
+        } else {
+            self.delayed_packets.push(DelayedPacket {
+                send_time: Instant::now() + Duration::from_millis(delay as u64),
+                packet,
+                addr,
+            });
+            Ok(())
         }
     }
 
@@ -177,7 +252,7 @@ impl GameServer {
     }
 
     fn broadcast_snapshots(&mut self) {
-        let client_data: Vec<(SocketAddr, u32, u32, u32, bool)> = self
+        let client_data: Vec<(SocketAddr, u32, u32, u32, bool, u32)> = self
             .connections
             .iter()
             .filter(|c| c.state == ConnectionState::Connected)
@@ -188,6 +263,7 @@ impl GameServer {
                     c.last_acked_tick,
                     c.send_sequence,
                     c.packet_loss_sim.should_drop(),
+                    c.packet_loss_sim.delay_ms(),
                 )
             })
             .collect();
@@ -195,7 +271,7 @@ impl GameServer {
         let current_tick = self.tick;
         let max_delta_age = self.config.snapshot_buffer_size as u32 / 2;
 
-        for (addr, last_cmd_ack, last_acked_tick, send_seq, should_drop) in client_data {
+        for (addr, last_cmd_ack, last_acked_tick, send_seq, should_drop, delay) in client_data {
             if should_drop {
                 if let Some(client) = self.connections.get_by_addr_mut(&addr) {
                     client.send_sequence = client.send_sequence.wrapping_add(1);
@@ -213,7 +289,13 @@ impl GameServer {
             let header = PacketHeader::new(send_seq, 0, 0);
             let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
 
-            if let Err(e) = self.endpoint.send_to(&packet, addr) {
+            if delay > 0 {
+                self.delayed_packets.push(DelayedPacket {
+                    send_time: Instant::now() + Duration::from_millis(delay as u64),
+                    packet,
+                    addr,
+                });
+            } else if let Err(e) = self.endpoint.send_to(&packet, addr) {
                 self.pending_events.push_back(ServerEvent::Error {
                     message: format!("Failed to send snapshot to {}: {}", addr, e),
                 });
@@ -301,7 +383,7 @@ impl GameServer {
                         reason: reason.to_string(),
                     },
                 );
-                self.endpoint.send_to(&packet, addr)?;
+                self.send_packet_simulated(packet, addr)?;
                 self.pending_events
                     .push_back(ServerEvent::ConnectionDenied {
                         addr,
@@ -329,7 +411,7 @@ impl GameServer {
             },
         );
 
-        self.endpoint.send_to(&packet, addr)?;
+        self.send_packet_simulated(packet, addr)?;
 
         Ok(())
     }
@@ -372,7 +454,7 @@ impl GameServer {
                 entity_id,
             },
         );
-        self.endpoint.send_to(&packet, addr)?;
+        self.send_packet_simulated(packet, addr)?;
 
         Ok(())
     }
@@ -407,7 +489,8 @@ impl GameServer {
 
         let header = PacketHeader::new(send_seq, 0, 0);
         let packet = Packet::new(header, PacketType::Pong { timestamp });
-        self.endpoint.send_to(&packet, addr)?;
+
+        self.send_packet_simulated(packet, addr)?;
 
         if let Some(client) = self.connections.get_by_addr_mut(&addr) {
             client.send_sequence = client.send_sequence.wrapping_add(1);

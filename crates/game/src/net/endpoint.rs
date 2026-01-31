@@ -1,11 +1,11 @@
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::connection::ConnectionState;
-use super::protocol::{Packet, PacketHeader, PacketType, MAX_PACKET_SIZE};
+use super::protocol::{MAX_PACKET_SIZE, Packet, PacketHeader, PacketType};
 use super::stats::NetworkStats;
 use super::tracking::{AckTracker, ReceiveTracker};
 
