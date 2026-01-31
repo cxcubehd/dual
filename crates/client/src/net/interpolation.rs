@@ -12,6 +12,7 @@ pub struct InterpolationConfig {
     pub min_buffer_snapshots: usize,
     pub max_buffer_snapshots: usize,
     pub time_correction_rate: f64,
+    pub extrapolation_limit_ms: f64,
 }
 
 impl Default for InterpolationConfig {
@@ -21,6 +22,7 @@ impl Default for InterpolationConfig {
             min_buffer_snapshots: 3,
             max_buffer_snapshots: 64,
             time_correction_rate: 0.1,
+            extrapolation_limit_ms: 250.0,
         }
     }
 }
@@ -72,8 +74,11 @@ pub struct InterpolationEngine {
     server_time_offset_ms: f64,
     render_time_ms: f64,
     interpolated_entities: HashMap<u32, InterpolatedEntity>,
+    known_entities: HashMap<u32, EntityState>,
     ready: bool,
     latest_server_tick: u32,
+    last_snapshot_time_ms: f64,
+    is_extrapolating: bool,
 }
 
 impl InterpolationEngine {
@@ -84,8 +89,11 @@ impl InterpolationEngine {
             server_time_offset_ms: 0.0,
             render_time_ms: 0.0,
             interpolated_entities: HashMap::new(),
+            known_entities: HashMap::new(),
             ready: false,
             latest_server_tick: 0,
+            last_snapshot_time_ms: 0.0,
+            is_extrapolating: false,
         }
     }
 
@@ -100,6 +108,9 @@ impl InterpolationEngine {
             self.latest_server_tick = snapshot.tick;
         }
 
+        self.last_snapshot_time_ms = current_time_ms();
+        self.is_extrapolating = false;
+
         let local_time = current_time_ms();
         let new_offset = server_time - local_time;
 
@@ -112,8 +123,10 @@ impl InterpolationEngine {
             self.server_time_offset_ms += correction;
         }
 
+        let full_snapshot = self.expand_snapshot(snapshot);
+
         let timed = TimedSnapshot {
-            snapshot,
+            snapshot: full_snapshot,
             server_time_ms: server_time,
         };
 
@@ -133,8 +146,34 @@ impl InterpolationEngine {
         }
     }
 
+    fn expand_snapshot(&mut self, snapshot: WorldSnapshot) -> WorldSnapshot {
+        if !snapshot.is_delta {
+            for entity in &snapshot.entities {
+                self.known_entities.insert(entity.entity_id, entity.clone());
+            }
+            for removed_id in &snapshot.removed_entity_ids {
+                self.known_entities.remove(removed_id);
+            }
+            return snapshot;
+        }
+
+        for entity in &snapshot.entities {
+            self.known_entities.insert(entity.entity_id, entity.clone());
+        }
+
+        for removed_id in &snapshot.removed_entity_ids {
+            self.known_entities.remove(removed_id);
+        }
+
+        let mut full_snapshot = WorldSnapshot::new(snapshot.tick, snapshot.server_time_ms);
+        full_snapshot.last_command_ack = snapshot.last_command_ack;
+        full_snapshot.entities = self.known_entities.values().cloned().collect();
+
+        full_snapshot
+    }
+
     pub fn update(&mut self, delta_time: f32) {
-        if !self.ready || self.snapshots.len() < 2 {
+        if !self.ready || self.snapshots.is_empty() {
             return;
         }
 
@@ -150,10 +189,41 @@ impl InterpolationEngine {
 
         self.cleanup_old_snapshots();
 
+        if self.snapshots.len() < 2 {
+            self.extrapolate_from_latest(delta_time);
+            return;
+        }
+
         if let Some((from_idx, to_idx, t)) = self.find_interpolation_indices() {
+            self.is_extrapolating = t > 1.0;
             self.interpolate_at_indices(from_idx, to_idx, t);
-        } else if !self.snapshots.is_empty() {
-            self.snap_to_latest();
+        } else {
+            self.extrapolate_from_latest(delta_time);
+        }
+    }
+
+    fn extrapolate_from_latest(&mut self, delta_time: f32) {
+        let time_since_last_snapshot = current_time_ms() - self.last_snapshot_time_ms;
+
+        if time_since_last_snapshot > self.config.extrapolation_limit_ms {
+            return;
+        }
+
+        self.is_extrapolating = true;
+
+        if let Some(latest) = self.snapshots.last() {
+            for state in &latest.snapshot.entities {
+                let entity_id = state.entity_id;
+                let velocity = Vec3::from(state.decode_velocity());
+
+                if let Some(existing) = self.interpolated_entities.get_mut(&entity_id) {
+                    existing.position += velocity * delta_time;
+                } else {
+                    let mut entity = InterpolatedEntity::from_network_state(state);
+                    entity.position += velocity * delta_time;
+                    self.interpolated_entities.insert(entity_id, entity);
+                }
+            }
         }
     }
 
@@ -223,16 +293,6 @@ impl InterpolationEngine {
         }
     }
 
-    fn snap_to_latest(&mut self) {
-        if let Some(latest) = self.snapshots.last() {
-            self.interpolated_entities.clear();
-            for state in &latest.snapshot.entities {
-                let entity = InterpolatedEntity::from_network_state(state);
-                self.interpolated_entities.insert(entity.id, entity);
-            }
-        }
-    }
-
     fn cleanup_old_snapshots(&mut self) {
         let cutoff = self.render_time_ms - 500.0;
         self.snapshots.retain(|s| s.server_time_ms > cutoff);
@@ -255,8 +315,11 @@ impl InterpolationEngine {
         self.server_time_offset_ms = 0.0;
         self.render_time_ms = 0.0;
         self.interpolated_entities.clear();
+        self.known_entities.clear();
         self.ready = false;
         self.latest_server_tick = 0;
+        self.last_snapshot_time_ms = 0.0;
+        self.is_extrapolating = false;
     }
 
     pub fn debug_stats(&self) -> InterpolationStats {
@@ -267,6 +330,7 @@ impl InterpolationEngine {
             latest_server_tick: self.latest_server_tick,
             entity_count: self.interpolated_entities.len(),
             is_ready: self.ready,
+            is_extrapolating: self.is_extrapolating,
         }
     }
 }
@@ -341,6 +405,7 @@ pub struct InterpolationStats {
     pub latest_server_tick: u32,
     pub entity_count: usize,
     pub is_ready: bool,
+    pub is_extrapolating: bool,
 }
 
 #[cfg(test)]

@@ -1,13 +1,15 @@
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::connection::ConnectionState;
-use super::protocol::{MAX_PACKET_SIZE, Packet, PacketHeader, PacketType};
+use super::protocol::{Packet, PacketHeader, PacketType, MAX_PACKET_SIZE};
 use super::stats::NetworkStats;
 use super::tracking::{AckTracker, ReceiveTracker};
+
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 pub struct NetworkEndpoint {
     socket: UdpSocket,
@@ -42,7 +44,7 @@ impl NetworkEndpoint {
             receive_tracker: ReceiveTracker::new(),
             stats: NetworkStats::default(),
             recv_buffer: [0u8; MAX_PACKET_SIZE],
-            timeout: Duration::from_secs(10),
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             last_receive_time: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
             server_mode: false,

@@ -12,9 +12,9 @@ impl Default for ClientConfig {
         Self {
             server_tick_rate: 60,
             interpolation_delay: 2,
-            connection_timeout_secs: 10,
+            connection_timeout_secs: 120,
             command_rate: 60,
-            ping_interval_secs: 1.0,
+            ping_interval_secs: 0.25,
         }
     }
 }

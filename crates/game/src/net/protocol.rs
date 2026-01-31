@@ -1,4 +1,4 @@
-use rkyv::{Archive, Deserialize, Serialize, rancor};
+use rkyv::{rancor, Archive, Deserialize, Serialize};
 
 pub const MAX_PACKET_SIZE: usize = 1200;
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -78,6 +78,9 @@ pub enum PacketType {
     },
     Pong {
         timestamp: u64,
+    },
+    SnapshotAck {
+        received_tick: u32,
     },
     Disconnect,
     LobbyList(Vec<LobbyInfo>),
@@ -247,7 +250,10 @@ pub struct WorldSnapshot {
     pub tick: u32,
     pub server_time_ms: u64,
     pub last_command_ack: u32,
+    pub baseline_tick: u32,
+    pub is_delta: bool,
     pub entities: Vec<EntityState>,
+    pub removed_entity_ids: Vec<u32>,
 }
 
 impl WorldSnapshot {
@@ -256,7 +262,22 @@ impl WorldSnapshot {
             tick,
             server_time_ms,
             last_command_ack: 0,
+            baseline_tick: 0,
+            is_delta: false,
             entities: Vec::new(),
+            removed_entity_ids: Vec::new(),
+        }
+    }
+
+    pub fn new_delta(tick: u32, server_time_ms: u64, baseline_tick: u32) -> Self {
+        Self {
+            tick,
+            server_time_ms,
+            last_command_ack: 0,
+            baseline_tick,
+            is_delta: true,
+            entities: Vec::new(),
+            removed_entity_ids: Vec::new(),
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
@@ -37,13 +37,15 @@ pub struct NetworkClient {
 
 impl NetworkClient {
     pub fn new(config: ClientConfig) -> io::Result<Self> {
-        let endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
+        let mut endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
+        endpoint.set_timeout(Duration::from_secs(config.connection_timeout_secs));
 
         let interpolation_config = InterpolationConfig {
             target_delay_ms: 100.0,
             min_buffer_snapshots: 3,
             max_buffer_snapshots: 64,
             time_correction_rate: 0.1,
+            extrapolation_limit_ms: 250.0,
         };
 
         let tick_rate = config.server_tick_rate;
@@ -284,6 +286,8 @@ impl NetworkClient {
     }
 
     fn handle_snapshot(&mut self, snapshot: WorldSnapshot) -> io::Result<()> {
+        let received_tick = snapshot.tick;
+
         self.estimated_server_tick = snapshot
             .tick
             .saturating_add(self.config.interpolation_delay);
@@ -313,6 +317,16 @@ impl NetworkClient {
 
         self.interpolation.push_snapshot(snapshot);
 
+        self.send_snapshot_ack(received_tick)?;
+
+        Ok(())
+    }
+
+    fn send_snapshot_ack(&mut self, received_tick: u32) -> io::Result<()> {
+        let packet = self
+            .endpoint
+            .create_packet(PacketType::SnapshotAck { received_tick });
+        self.endpoint.send(&packet)?;
         Ok(())
     }
 

@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use dual::{ConnectionManager, ConnectionState, NetworkEndpoint, Packet, PacketHeader, PacketType};
+use dual::{
+    ConnectionManager, ConnectionState, NetworkEndpoint, Packet, PacketHeader,
+    PacketLossSimulation, PacketType,
+};
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(40000);
 
@@ -465,4 +468,141 @@ fn test_receive_tracker_zero_sequence() {
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].0.header.sequence, 0);
+}
+
+#[test]
+fn test_connection_survives_packet_loss() {
+    let port = next_port();
+    let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+    let client_addr: SocketAddr = format!("127.0.0.1:{}", port + 1).parse().unwrap();
+
+    let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
+    server_endpoint.set_server_mode(true);
+    let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
+
+    let mut connections = ConnectionManager::new(32);
+    let client_salt = generate_salt();
+
+    client_endpoint.set_remote(server_addr);
+    let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+    client_endpoint.send(&request).unwrap();
+
+    let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
+    let (packet, from_addr) = &received[0];
+
+    if let PacketType::ConnectionRequest { client_salt: salt } = &packet.payload {
+        let client = connections
+            .get_or_create_pending(*from_addr, *salt)
+            .unwrap();
+        let server_salt = client.server_salt;
+        let challenge = client.combined_salt();
+
+        let header = PacketHeader::new(client.send_sequence, 0, 0);
+        client.send_sequence += 1;
+
+        let response = Packet::new(
+            header,
+            PacketType::ConnectionChallenge {
+                server_salt,
+                challenge,
+            },
+        );
+        server_endpoint.send_to(&response, *from_addr).unwrap();
+    }
+
+    let _ = wait_for_packet(&mut client_endpoint, 200).expect("No packet received");
+    let response = client_endpoint.create_packet(PacketType::ChallengeResponse {
+        combined_salt: client_salt ^ connections.iter().next().unwrap().server_salt,
+    });
+    client_endpoint.send(&response).unwrap();
+
+    let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
+    let (_, from_addr) = &received[0];
+
+    let client = connections.get_by_addr_mut(from_addr).unwrap();
+    client.state = ConnectionState::Connected;
+
+    client.packet_loss_sim = PacketLossSimulation {
+        enabled: true,
+        loss_percent: 30.0,
+        min_latency_ms: 30,
+        max_latency_ms: 60,
+        jitter_ms: 20,
+    };
+
+    let client_id = client.client_id;
+    let header = PacketHeader::new(client.send_sequence, 0, 0);
+    client.send_sequence += 1;
+
+    let accepted = Packet::new(
+        header,
+        PacketType::ConnectionAccepted {
+            client_id,
+            entity_id: 1,
+        },
+    );
+    server_endpoint.send_to(&accepted, *from_addr).unwrap();
+
+    let _ = wait_for_packet(&mut client_endpoint, 200);
+
+    let test_duration = Duration::from_secs(65);
+    let start = Instant::now();
+    let mut server_send_sequence = 2u32;
+    let mut last_send = Instant::now();
+    let send_interval = Duration::from_millis(16);
+
+    while start.elapsed() < test_duration {
+        if last_send.elapsed() >= send_interval {
+            let client = connections.iter().next().unwrap();
+
+            if !client.packet_loss_sim.should_drop() {
+                let snapshot = dual::WorldSnapshot::new(
+                    server_send_sequence,
+                    start.elapsed().as_millis() as u64,
+                );
+                let header = PacketHeader::new(server_send_sequence, 0, 0);
+                let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
+                let _ = server_endpoint.send_to(&packet, client.addr);
+            }
+
+            server_send_sequence = server_send_sequence.wrapping_add(1);
+            last_send = Instant::now();
+        }
+
+        if let Ok(received) = client_endpoint.receive() {
+            for _ in received {
+                if let Some(client) = connections.get_by_addr_mut(&client_addr) {
+                    client.touch();
+                }
+            }
+        }
+
+        if let Ok(received) = server_endpoint.receive() {
+            for (_, addr) in received {
+                if let Some(client) = connections.get_by_addr_mut(&addr) {
+                    client.touch();
+                }
+            }
+        }
+
+        let ping = client_endpoint.create_packet(PacketType::Ping {
+            timestamp: start.elapsed().as_millis() as u64,
+        });
+        let _ = client_endpoint.send(&ping);
+
+        let timed_out_clients = connections.cleanup_timed_out();
+        assert!(
+            timed_out_clients.is_empty(),
+            "Client was timed out after {:?} - this should not happen with proper timeout handling",
+            start.elapsed()
+        );
+
+        thread::sleep(Duration::from_millis(16));
+    }
+
+    assert_eq!(
+        connections.connected_count(),
+        1,
+        "Connection should survive 65 seconds with 30% packet loss"
+    );
 }

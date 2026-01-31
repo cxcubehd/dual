@@ -43,31 +43,15 @@ pub struct NetworkStats {
 }
 
 pub fn rand_percent() -> f32 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    let state = RandomState::new();
-    let mut hasher = state.build_hasher();
-    hasher.write_u64(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64,
-    );
-    (hasher.finish() % 10000) as f32 / 10000.0
+    rand_u64() as f32 / u64::MAX as f32
 }
 
 pub fn rand_u64() -> u64 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::Instant;
 
-    let state = RandomState::new();
-    let mut hasher = state.build_hasher();
-    hasher.write_u64(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64,
-    );
+    let mut hasher = DefaultHasher::new();
+    Instant::now().hash(&mut hasher);
     hasher.finish()
 }

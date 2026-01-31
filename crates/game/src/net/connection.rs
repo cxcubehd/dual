@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use super::stats::{PacketLossSimulation, rand_u64};
+use super::stats::{rand_u64, PacketLossSimulation};
 use super::tracking::ReceiveTracker;
+
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -22,6 +24,7 @@ pub struct ClientConnection {
     pub client_salt: u64,
     pub server_salt: u64,
     pub last_command_ack: u32,
+    pub last_acked_tick: u32,
     pub last_receive_time: Instant,
     pub entity_id: Option<u32>,
     pub receive_tracker: ReceiveTracker,
@@ -39,6 +42,7 @@ impl ClientConnection {
             client_salt,
             server_salt: rand_u64(),
             last_command_ack: 0,
+            last_acked_tick: 0,
             last_receive_time: Instant::now(),
             entity_id: None,
             receive_tracker: ReceiveTracker::new(),
@@ -77,7 +81,17 @@ impl ConnectionManager {
             clients: HashMap::new(),
             next_client_id: 1,
             max_clients,
-            timeout: Duration::from_secs(10),
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+        }
+    }
+
+    pub fn with_timeout(max_clients: usize, timeout_secs: u64) -> Self {
+        Self {
+            clients_by_addr: HashMap::new(),
+            clients: HashMap::new(),
+            next_client_id: 1,
+            max_clients,
+            timeout: Duration::from_secs(timeout_secs),
         }
     }
 

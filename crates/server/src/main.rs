@@ -13,10 +13,11 @@ use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 
 use config::ServerConfig;
+use dual::PacketLossSimulation;
 use events::ServerEvent;
 use server::GameServer;
 use tui::TuiState;
@@ -39,15 +40,43 @@ struct Args {
 
     #[arg(long)]
     headless: bool,
+
+    #[arg(long, help = "Enable global packet loss simulation")]
+    simulate_packet_loss: bool,
+
+    #[arg(long, default_value_t = 0.0, help = "Packet loss percentage (0-100)")]
+    loss_percent: f32,
+
+    #[arg(long, default_value_t = 0, help = "Minimum latency in ms")]
+    min_latency: u32,
+
+    #[arg(long, default_value_t = 0, help = "Maximum latency in ms")]
+    max_latency: u32,
+
+    #[arg(long, default_value_t = 0, help = "Jitter in ms")]
+    jitter: u32,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let bind_addr = format!("{}:{}", args.bind, args.port);
 
+    let global_packet_loss = if args.simulate_packet_loss {
+        Some(PacketLossSimulation {
+            enabled: true,
+            loss_percent: args.loss_percent,
+            min_latency_ms: args.min_latency,
+            max_latency_ms: args.max_latency,
+            jitter_ms: args.jitter,
+        })
+    } else {
+        None
+    };
+
     let config = ServerConfig {
         tick_rate: args.tick_rate,
         max_clients: args.max_clients,
+        global_packet_loss,
         ..Default::default()
     };
 

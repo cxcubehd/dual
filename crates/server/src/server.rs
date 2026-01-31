@@ -1,15 +1,15 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
 use dual::{
     ClientCommand, ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats, Packet,
-    PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World,
+    PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World, WorldSnapshot,
 };
 
 use crate::config::ServerConfig;
@@ -177,7 +177,7 @@ impl GameServer {
     }
 
     fn broadcast_snapshots(&mut self) {
-        let client_data: Vec<(SocketAddr, u32, u32, bool)> = self
+        let client_data: Vec<(SocketAddr, u32, u32, u32, bool)> = self
             .connections
             .iter()
             .filter(|c| c.state == ConnectionState::Connected)
@@ -185,13 +185,17 @@ impl GameServer {
                 (
                     c.addr,
                     c.last_command_ack,
+                    c.last_acked_tick,
                     c.send_sequence,
                     c.packet_loss_sim.should_drop(),
                 )
             })
             .collect();
 
-        for (addr, last_cmd_ack, send_seq, should_drop) in client_data {
+        let current_tick = self.tick;
+        let max_delta_age = self.config.snapshot_buffer_size as u32 / 2;
+
+        for (addr, last_cmd_ack, last_acked_tick, send_seq, should_drop) in client_data {
             if should_drop {
                 if let Some(client) = self.connections.get_by_addr_mut(&addr) {
                     client.send_sequence = client.send_sequence.wrapping_add(1);
@@ -199,7 +203,12 @@ impl GameServer {
                 continue;
             }
 
-            let snapshot = self.world.generate_snapshot(last_cmd_ack);
+            let snapshot = self.generate_client_snapshot(
+                last_cmd_ack,
+                last_acked_tick,
+                current_tick,
+                max_delta_age,
+            );
 
             let header = PacketHeader::new(send_seq, 0, 0);
             let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
@@ -214,6 +223,26 @@ impl GameServer {
                 client.send_sequence = client.send_sequence.wrapping_add(1);
             }
         }
+    }
+
+    fn generate_client_snapshot(
+        &self,
+        last_cmd_ack: u32,
+        last_acked_tick: u32,
+        current_tick: u32,
+        max_delta_age: u32,
+    ) -> WorldSnapshot {
+        let baseline_age = current_tick.saturating_sub(last_acked_tick);
+
+        if last_acked_tick > 0 && baseline_age < max_delta_age {
+            if let Some(baseline) = self.snapshot_history.get_by_tick(last_acked_tick) {
+                return self
+                    .world
+                    .generate_delta_from_baseline(baseline, last_cmd_ack);
+            }
+        }
+
+        self.world.generate_snapshot(last_cmd_ack)
     }
 
     fn process_network(&mut self) -> io::Result<()> {
@@ -240,6 +269,9 @@ impl GameServer {
             PacketType::Ping { timestamp } => {
                 self.handle_ping(addr, timestamp)?;
             }
+            PacketType::SnapshotAck { received_tick } => {
+                self.handle_snapshot_ack(addr, received_tick)?;
+            }
             PacketType::Disconnect => {
                 self.handle_disconnect(addr)?;
             }
@@ -256,6 +288,8 @@ impl GameServer {
     fn handle_connection_request(&mut self, addr: SocketAddr, client_salt: u64) -> io::Result<()> {
         self.pending_events
             .push_back(ServerEvent::ClientConnecting { addr });
+
+        let global_packet_loss = self.config.global_packet_loss.clone();
 
         let client = match self.connections.get_or_create_pending(addr, client_salt) {
             Ok(c) => c,
@@ -276,6 +310,10 @@ impl GameServer {
                 return Ok(());
             }
         };
+
+        if let Some(sim) = global_packet_loss {
+            client.packet_loss_sim = sim;
+        }
 
         let server_salt = client.server_salt;
         let challenge = client.combined_salt();
@@ -361,9 +399,29 @@ impl GameServer {
     }
 
     fn handle_ping(&mut self, addr: SocketAddr, timestamp: u64) -> io::Result<()> {
-        let header = PacketHeader::new(0, 0, 0);
+        let send_seq = self
+            .connections
+            .get_by_addr(&addr)
+            .map(|c| c.send_sequence)
+            .unwrap_or(0);
+
+        let header = PacketHeader::new(send_seq, 0, 0);
         let packet = Packet::new(header, PacketType::Pong { timestamp });
         self.endpoint.send_to(&packet, addr)?;
+
+        if let Some(client) = self.connections.get_by_addr_mut(&addr) {
+            client.send_sequence = client.send_sequence.wrapping_add(1);
+        }
+
+        Ok(())
+    }
+
+    fn handle_snapshot_ack(&mut self, addr: SocketAddr, received_tick: u32) -> io::Result<()> {
+        if let Some(client) = self.connections.get_by_addr_mut(&addr) {
+            if received_tick > client.last_acked_tick {
+                client.last_acked_tick = received_tick;
+            }
+        }
         Ok(())
     }
 
