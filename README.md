@@ -144,3 +144,7 @@ cargo run -p client --release
 # Start Server
 cargo run -p server --release
 ```
+
+## License
+
+All Rights Reserved.
