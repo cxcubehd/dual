@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use super::stats::{rand_u64, PacketLossSimulation};
+use super::stats::{PacketLossSimulation, rand_u64};
 use super::tracking::ReceiveTracker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

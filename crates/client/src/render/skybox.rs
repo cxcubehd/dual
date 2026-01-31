@@ -3,7 +3,7 @@
 //! Renders a unit cube centered at the camera position, sampled using a cubemap texture.
 //! Drawn with depth write disabled so all other geometry renders on top.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::assets::Assets;
 

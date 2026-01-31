@@ -7,11 +7,10 @@ mod tracking;
 
 pub use connection::{ClientConnection, ConnectionManager, ConnectionState};
 pub use endpoint::NetworkEndpoint;
-pub use protocol::{sequence_greater_than, ArchivedPacket};
+pub use protocol::{ArchivedPacket, sequence_greater_than};
 pub use protocol::{
-    ClientCommand, EntityState, LobbyInfo, Packet, PacketError, PacketHeader, PacketType,
-    WorldSnapshot, DEFAULT_PORT, DEFAULT_TICK_RATE, MAX_PACKET_SIZE, PROTOCOL_MAGIC,
-    PROTOCOL_VERSION,
+    ClientCommand, DEFAULT_PORT, DEFAULT_TICK_RATE, EntityState, LobbyInfo, MAX_PACKET_SIZE,
+    PROTOCOL_MAGIC, PROTOCOL_VERSION, Packet, PacketError, PacketHeader, PacketType, WorldSnapshot,
 };
 pub use snapshot::{Entity, EntityType, SnapshotBuffer, World};
 pub use stats::{NetworkStats, PacketLossSimulation};

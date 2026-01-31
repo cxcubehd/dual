@@ -171,7 +171,11 @@ impl Texture {
     }
 
     /// Create a bind group for this texture.
-    pub fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
+    pub fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Texture Bind Group"),
             layout,

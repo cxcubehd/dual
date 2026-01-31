@@ -17,7 +17,11 @@ use net::{ClientConfig, NetworkClient};
 #[command(name = "dual")]
 #[command(about = "Dual game client")]
 struct Args {
-    #[arg(short, long, help = "Server address to connect to (e.g., 127.0.0.1:27015)")]
+    #[arg(
+        short,
+        long,
+        help = "Server address to connect to (e.g., 127.0.0.1:27015)"
+    )]
     server: Option<String>,
 
     #[arg(long, help = "Skip TUI menu and launch game directly")]

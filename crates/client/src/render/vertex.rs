@@ -49,4 +49,3 @@ impl Vertex {
 pub fn vertices_as_bytes(vertices: &[Vertex]) -> &[u8] {
     bytemuck::cast_slice(vertices)
 }
-

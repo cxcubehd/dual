@@ -5,9 +5,9 @@ pub mod interpolation;
 pub mod prediction;
 
 pub use dual::{
-    ClientCommand, ConnectionState, Entity, EntityState, EntityType, NetworkEndpoint, NetworkStats,
-    Packet, PacketHeader, PacketType, SnapshotBuffer, World, WorldSnapshot, DEFAULT_PORT,
-    DEFAULT_TICK_RATE,
+    ClientCommand, ConnectionState, DEFAULT_PORT, DEFAULT_TICK_RATE, Entity, EntityState,
+    EntityType, NetworkEndpoint, NetworkStats, Packet, PacketHeader, PacketType, SnapshotBuffer,
+    World, WorldSnapshot,
 };
 
 pub use client::NetworkClient;

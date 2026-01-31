@@ -1,4 +1,4 @@
-use rkyv::{rancor, Archive, Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize, rancor};
 
 pub const MAX_PACKET_SIZE: usize = 1200;
 pub const PROTOCOL_VERSION: u32 = 1;

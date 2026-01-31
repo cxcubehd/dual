@@ -50,15 +50,39 @@ const MSAA_SAMPLE_COUNT: u32 = 4;
 /// Red cube vertices for player representation
 const PLAYER_CUBE_VERTICES: &[Vertex] = &[
     // Front face (red)
-    Vertex { position: [-0.5, -0.5, 0.5], color: [0.1, 0.1, 0.3] },
-    Vertex { position: [0.5, -0.5, 0.5], color: [0.1, 0.1, 0.3] },
-    Vertex { position: [0.5, 0.5, 0.5], color: [0.15, 0.15, 0.4] },
-    Vertex { position: [-0.5, 0.5, 0.5], color: [0.15, 0.15, 0.4] },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        color: [0.1, 0.1, 0.3],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        color: [0.1, 0.1, 0.3],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        color: [0.15, 0.15, 0.4],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        color: [0.15, 0.15, 0.4],
+    },
     // Back face (darker blue/black)
-    Vertex { position: [-0.5, -0.5, -0.5], color: [0.0, 0.0, 0.1] },
-    Vertex { position: [0.5, -0.5, -0.5], color: [0.0, 0.0, 0.1] },
-    Vertex { position: [0.5, 0.5, -0.5], color: [0.05, 0.05, 0.2] },
-    Vertex { position: [-0.5, 0.5, -0.5], color: [0.05, 0.05, 0.2] },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        color: [0.0, 0.0, 0.1],
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        color: [0.0, 0.0, 0.1],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        color: [0.05, 0.05, 0.2],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        color: [0.05, 0.05, 0.2],
+    },
 ];
 
 /// A player cube instance with its own transform
@@ -221,13 +245,8 @@ impl Renderer {
             size.height,
         );
 
-        let menu_overlay = MenuOverlay::new(
-            &device,
-            &queue,
-            config.format,
-            size.width,
-            size.height,
-        );
+        let menu_overlay =
+            MenuOverlay::new(&device, &queue, config.format, size.width, size.height);
 
         let mut renderer = Self {
             surface,
@@ -361,11 +380,13 @@ impl Renderer {
 
     /// Add a new player cube and return its index.
     pub fn add_player_cube(&mut self) -> Result<usize> {
-        let transform_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Player Cube Transform Buffer"),
-            contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let transform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Player Cube Transform Buffer"),
+                contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Player Cube Transform Bind Group"),
@@ -416,10 +437,10 @@ impl Renderer {
         let _ = self
             .debug_overlay
             .prepare(&self.device, &self.queue, self.config.width);
-        
+
         // Prepare menu overlay
         let _ = self.menu_overlay.prepare(&self.device, &self.queue);
-        
+
         self.record_overlay_pass(&mut encoder, &view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -477,7 +498,10 @@ impl Renderer {
         if !visible_cubes.is_empty() {
             pass.set_pipeline(&self.player_cube_pipeline);
             pass.set_vertex_buffer(0, self.player_cube_vertex_buffer.slice(..));
-            pass.set_index_buffer(self.player_cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(
+                self.player_cube_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
 
             for cube in visible_cubes {
                 pass.set_bind_group(0, &self.camera_bind_group, &[]);
