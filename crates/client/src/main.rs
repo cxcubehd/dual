@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 mod app;
 mod assets;
 mod debug;
@@ -8,17 +6,21 @@ pub mod net;
 mod render;
 mod tui;
 
+use std::net::SocketAddr;
+
 use clap::Parser;
 use winit::event_loop::EventLoop;
+
+use net::{ClientConfig, NetworkClient};
 
 #[derive(Parser)]
 #[command(name = "dual")]
 #[command(about = "Dual game client")]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short, long, help = "Server address to connect to (e.g., 127.0.0.1:27015)")]
     server: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, help = "Skip TUI menu and launch game directly")]
     skip_menu: bool,
 }
 
@@ -27,8 +29,14 @@ fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    if args.skip_menu {
-        launch_game(None)?;
+    let client = if let Some(server_addr) = args.server {
+        Some(connect_to_server(&server_addr)?)
+    } else {
+        None
+    };
+
+    if args.skip_menu || client.is_some() {
+        launch_game(client)?;
     } else {
         match tui::run_menu() {
             Ok(Some(client)) => {
@@ -47,7 +55,15 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn launch_game(client: Option<net::NetworkClient>) -> anyhow::Result<()> {
+fn connect_to_server(addr: &str) -> anyhow::Result<NetworkClient> {
+    let socket_addr: SocketAddr = addr.parse()?;
+    let config = ClientConfig::default();
+    let mut client = NetworkClient::new(config)?;
+    client.connect(socket_addr)?;
+    Ok(client)
+}
+
+fn launch_game(client: Option<NetworkClient>) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = app::App::with_network_client(client);
 

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dual_game::{
+use dual::{
     ClientCommand, ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType,
     WorldSnapshot,
 };

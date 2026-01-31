@@ -1,15 +1,16 @@
 [package]
-name = "dual"
+name = "dual_client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "dual"
+name = "client"
 path = "src/main.rs"
 
 [dependencies]
-dual-game.workspace = true
+dual.workspace = true
+
 glam.workspace = true
 wgpu.workspace = true
 winit.workspace = true

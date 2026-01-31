@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use dual_game::{
+use dual::{
     ClientCommand, ConnectionManager, ConnectionState, EntityType, NetworkEndpoint, NetworkStats,
     Packet, PacketHeader, PacketType, SnapshotBuffer, World,
 };
@@ -56,7 +56,8 @@ pub struct GameServer {
 
 impl GameServer {
     pub fn new(bind_addr: &str, config: ServerConfig) -> io::Result<Self> {
-        let endpoint = NetworkEndpoint::bind(bind_addr)?;
+        let mut endpoint = NetworkEndpoint::bind(bind_addr)?;
+        endpoint.set_server_mode(true);
         let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
 
         log::info!(

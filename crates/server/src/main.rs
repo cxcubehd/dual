@@ -22,7 +22,7 @@ struct Args {
     #[arg(short, long, default_value = "0.0.0.0")]
     bind: String,
 
-    #[arg(short, long, default_value_t = dual_game::DEFAULT_PORT)]
+    #[arg(short, long, default_value_t = dual::DEFAULT_PORT)]
     port: u16,
 
     #[arg(short, long, default_value_t = 60)]

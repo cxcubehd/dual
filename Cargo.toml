@@ -40,4 +40,4 @@ gltf = "1.4"
 rust-embed = "8.11"
 
 # Internal crates
-dual-game = { path = "crates/game" }
+dual = { path = "crates/game" }

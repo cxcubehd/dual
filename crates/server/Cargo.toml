@@ -1,15 +1,16 @@
 [package]
-name = "dual-server"
+name = "dual_server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "dual-server"
+name = "server"
 path = "src/main.rs"
 
 [dependencies]
-dual-game.workspace = true
+dual.workspace = true
+
 glam.workspace = true
 tokio.workspace = true
 clap.workspace = true

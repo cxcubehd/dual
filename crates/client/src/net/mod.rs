@@ -1,7 +1,7 @@
 pub mod client;
 pub mod interpolation;
 
-pub use dual_game::{
+pub use dual::{
     ClientCommand, ConnectionState, Entity, EntityState, EntityType, NetworkEndpoint, NetworkStats,
     Packet, PacketHeader, PacketType, SnapshotBuffer, World, WorldSnapshot, DEFAULT_PORT,
     DEFAULT_TICK_RATE,

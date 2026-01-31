@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::protocol::{
-    sequence_greater_than, Packet, PacketHeader, PacketType, MAX_PACKET_SIZE, PROTOCOL_MAGIC,
-};
+use super::protocol::{sequence_greater_than, Packet, PacketHeader, PacketType, MAX_PACKET_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -176,7 +174,7 @@ impl ReceiveTracker {
             self.last_received = sequence;
         } else {
             let diff = self.last_received.wrapping_sub(sequence);
-            if diff <= 32 {
+            if diff > 0 && diff <= 32 {
                 self.received_bitfield |= 1 << (diff - 1);
             }
         }
@@ -382,6 +380,8 @@ pub struct NetworkEndpoint {
     timeout: Duration,
     last_receive_time: Instant,
     running: Arc<AtomicBool>,
+    /// When true, skip global duplicate filtering (for servers where per-client tracking is done)
+    server_mode: bool,
 }
 
 impl NetworkEndpoint {
@@ -404,7 +404,14 @@ impl NetworkEndpoint {
             timeout: Duration::from_secs(10),
             last_receive_time: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
+            server_mode: false,
         })
+    }
+
+    /// Enable server mode - disables global duplicate filtering
+    /// (server should do per-client tracking via ConnectionManager)
+    pub fn set_server_mode(&mut self, server_mode: bool) {
+        self.server_mode = server_mode;
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -479,17 +486,7 @@ impl NetworkEndpoint {
         loop {
             match self.socket.recv_from(&mut self.recv_buffer) {
                 Ok((size, addr)) => {
-                    if size < std::mem::size_of::<PacketHeader>() {
-                        continue;
-                    }
-
-                    let magic = u32::from_le_bytes([
-                        self.recv_buffer[0],
-                        self.recv_buffer[1],
-                        self.recv_buffer[2],
-                        self.recv_buffer[3],
-                    ]);
-                    if magic != PROTOCOL_MAGIC {
+                    if size < 8 {
                         continue;
                     }
 
@@ -499,7 +496,11 @@ impl NetworkEndpoint {
                                 continue;
                             }
 
-                            if !self.receive_tracker.record_received(packet.header.sequence) {
+                            // In server mode, skip global duplicate filtering
+                            // (per-client tracking is done via ConnectionManager)
+                            if !self.server_mode
+                                && !self.receive_tracker.record_received(packet.header.sequence)
+                            {
                                 continue;
                             }
 

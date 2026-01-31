@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 
-use dual_game::{Entity, EntityState, EntityType, SnapshotBuffer, WorldSnapshot};
+use dual::{Entity, EntityState, EntityType, SnapshotBuffer, WorldSnapshot};
 
 pub const DEFAULT_INTERPOLATION_DELAY_TICKS: u32 = 2;
 
