@@ -12,9 +12,9 @@ pub struct ModelVertex {
 
 impl ModelVertex {
     const ATTRIBS: [VertexAttribute; 3] = wgpu::vertex_attr_array![
-        0 => Float32x3,  // position
-        1 => Float32x2,  // tex_coords
-        2 => Float32x3   // normal
+        0 => Float32x3, // position
+        1 => Float32x2, // tex_coords
+        2 => Float32x3 // normal
     ];
 
     pub fn layout() -> VertexBufferLayout<'static> {
