@@ -28,7 +28,6 @@ pub struct NetworkClient {
     interpolation: InterpolationEngine,
     prediction: ClientPrediction,
     command_sequence: u32,
-    last_command_time: Instant,
     command_interval: Duration,
     last_ping_time: Instant,
     ping_interval: Duration,
@@ -37,6 +36,7 @@ pub struct NetworkClient {
     last_server_ack: u32,
     estimated_server_tick: u32,
     clock_offset_ms: i64,
+    input_accumulator: f32,
 }
 
 impl NetworkClient {
@@ -63,7 +63,6 @@ impl NetworkClient {
             client_salt,
             server_salt: None,
             command_sequence: 0,
-            last_command_time: Instant::now(),
             command_interval: Duration::from_secs_f64(1.0 / config.command_rate as f64),
             last_ping_time: Instant::now(),
             ping_interval: Duration::from_secs_f32(config.ping_interval_secs),
@@ -72,6 +71,7 @@ impl NetworkClient {
             last_server_ack: 0,
             estimated_server_tick: 0,
             clock_offset_ms: 0,
+            input_accumulator: 0.0,
             config,
         })
     }
@@ -157,15 +157,19 @@ impl NetworkClient {
             }
             ConnectionState::Connected => {
                 self.interpolation.update(delta_time);
+                self.prediction.update(delta_time);
 
-                if let Some(input) = input {
-                    let command =
-                        input.to_command(self.estimated_server_tick, self.command_sequence);
-                    self.prediction.apply_input(&command, delta_time);
+                self.input_accumulator += delta_time;
+                let step = self.command_interval.as_secs_f32();
 
-                    if self.last_command_time.elapsed() >= self.command_interval {
+                while self.input_accumulator >= step {
+                    self.input_accumulator -= step;
+
+                    if let Some(input) = input {
+                        let command =
+                            input.to_command(self.estimated_server_tick, self.command_sequence);
+                        self.prediction.apply_input(&command, step);
                         self.send_command(input)?;
-                        self.last_command_time = Instant::now();
                     }
                 }
 
