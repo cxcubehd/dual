@@ -3,8 +3,21 @@ use rkyv::{Archive, Deserialize, Serialize, rancor};
 pub const MAX_PACKET_SIZE: usize = 1200;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const PROTOCOL_MAGIC: u32 = 0x4455414C;
+pub const DEFAULT_PORT: u16 = 27015;
+pub const DEFAULT_TICK_RATE: u32 = 60;
 
 const SEQUENCE_WRAP_THRESHOLD: u32 = u32::MAX / 2;
+
+fn normalize_angle(angle: f32) -> f32 {
+    let two_pi = std::f32::consts::TAU;
+    let mut normalized = angle % two_pi;
+    if normalized > std::f32::consts::PI {
+        normalized -= two_pi;
+    } else if normalized < -std::f32::consts::PI {
+        normalized += two_pi;
+    }
+    normalized
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
@@ -14,16 +27,24 @@ pub struct PacketHeader {
     pub sequence: u32,
     pub ack: u32,
     pub ack_bitfield: u32,
+    pub channel: u8,
+    pub channel_seq: u16,
 }
 
 impl PacketHeader {
-    pub fn new(sequence: u32, ack: u32, ack_bitfield: u32) -> Self {
+    pub const CHANNEL_UNRELIABLE: u8 = 0;
+    pub const CHANNEL_RELIABLE: u8 = 1;
+    pub const CHANNEL_ORDERED: u8 = 2;
+
+    pub fn new(sequence: u32, ack: u32, ack_bitfield: u32, channel: u8, channel_seq: u16) -> Self {
         Self {
             magic: PROTOCOL_MAGIC,
             version: PROTOCOL_VERSION,
             sequence,
             ack,
             ack_bitfield,
+            channel,
+            channel_seq,
         }
     }
 
@@ -41,16 +62,58 @@ pub fn sequence_greater_than(s1: u32, s2: u32) -> bool {
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum PacketType {
-    ConnectionRequest { client_salt: u64 },
-    ConnectionChallenge { server_salt: u64, challenge: u64 },
-    ChallengeResponse { combined_salt: u64 },
-    ConnectionAccepted { client_id: u32 },
-    ConnectionDenied { reason: String },
+    ConnectionRequest {
+        client_salt: u64,
+    },
+    ConnectionChallenge {
+        server_salt: u64,
+        challenge: u64,
+    },
+    ChallengeResponse {
+        combined_salt: u64,
+    },
+    ConnectionAccepted {
+        client_id: u32,
+        entity_id: u32,
+    },
+    ConnectionDenied {
+        reason: String,
+    },
     ClientCommand(ClientCommand),
     WorldSnapshot(WorldSnapshot),
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
+    Ping {
+        timestamp: u64,
+    },
+    Pong {
+        timestamp: u64,
+    },
+    SnapshotAck {
+        received_tick: u32,
+    },
     Disconnect,
+    LobbyList(Vec<LobbyInfo>),
+    LobbyJoin {
+        lobby_id: u64,
+    },
+    LobbyLeave,
+    QueueJoin,
+    QueueLeave,
+    QueueStatus {
+        position: u32,
+        estimated_wait_secs: u32,
+    },
+}
+
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct LobbyInfo {
+    pub id: u64,
+    pub name: String,
+    pub player_count: u8,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub map_name: String,
+    pub game_mode: String,
 }
 
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
@@ -106,7 +169,8 @@ impl ClientCommand {
     }
 
     pub fn encode_view_angles(&mut self, yaw: f32, pitch: f32) {
-        self.view_angles = [(yaw * 10000.0) as i16, (pitch * 10000.0) as i16];
+        let normalized_yaw = normalize_angle(yaw);
+        self.view_angles = [(normalized_yaw * 10000.0) as i16, (pitch * 10000.0) as i16];
     }
 
     #[inline]
@@ -194,7 +258,10 @@ pub struct WorldSnapshot {
     pub tick: u32,
     pub server_time_ms: u64,
     pub last_command_ack: u32,
+    pub baseline_tick: u32,
+    pub is_delta: bool,
     pub entities: Vec<EntityState>,
+    pub removed_entity_ids: Vec<u32>,
 }
 
 impl WorldSnapshot {
@@ -203,7 +270,22 @@ impl WorldSnapshot {
             tick,
             server_time_ms,
             last_command_ack: 0,
+            baseline_tick: 0,
+            is_delta: false,
             entities: Vec::new(),
+            removed_entity_ids: Vec::new(),
+        }
+    }
+
+    pub fn new_delta(tick: u32, server_time_ms: u64, baseline_tick: u32) -> Self {
+        Self {
+            tick,
+            server_time_ms,
+            last_command_ack: 0,
+            baseline_tick,
+            is_delta: true,
+            entities: Vec::new(),
+            removed_entity_ids: Vec::new(),
         }
     }
 }
@@ -215,22 +297,13 @@ pub struct Packet {
     pub payload: PacketType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PacketError {
-    SerializeError(rancor::Error),
-    DeserializeError(rancor::Error),
+    #[error("serialization failed: {0}")]
+    Serialize(rancor::Error),
+    #[error("deserialization failed: {0}")]
+    Deserialize(rancor::Error),
 }
-
-impl std::fmt::Display for PacketError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PacketError::SerializeError(e) => write!(f, "Serialization error: {}", e),
-            PacketError::DeserializeError(e) => write!(f, "Deserialization error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for PacketError {}
 
 impl Packet {
     pub fn new(header: PacketHeader, payload: PacketType) -> Self {
@@ -240,15 +313,15 @@ impl Packet {
     pub fn serialize(&self) -> Result<Vec<u8>, PacketError> {
         rkyv::to_bytes::<rancor::Error>(self)
             .map(|aligned| aligned.into_vec())
-            .map_err(PacketError::SerializeError)
+            .map_err(PacketError::Serialize)
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, PacketError> {
-        rkyv::from_bytes::<Self, rancor::Error>(data).map_err(PacketError::DeserializeError)
+        rkyv::from_bytes::<Self, rancor::Error>(data).map_err(PacketError::Deserialize)
     }
 
     pub fn access_archived(data: &[u8]) -> Result<&ArchivedPacket, PacketError> {
-        rkyv::access::<ArchivedPacket, rancor::Error>(data).map_err(PacketError::DeserializeError)
+        rkyv::access::<ArchivedPacket, rancor::Error>(data).map_err(PacketError::Deserialize)
     }
 }
 
@@ -281,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_packet_serialization() {
-        let header = PacketHeader::new(1, 0, 0);
+        let header = PacketHeader::new(1, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
         let payload = PacketType::Ping { timestamp: 12345 };
         let packet = Packet::new(header, payload);
 

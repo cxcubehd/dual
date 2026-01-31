@@ -4,87 +4,30 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::interpolation::{InterpolatedEntity, InterpolationEngine, JitterBufferConfig};
-use super::protocol::{ClientCommand, Packet, PacketType, WorldSnapshot};
-use super::transport::{ConnectionState, NetworkEndpoint, NetworkStats};
+use glam::Vec3;
 
-#[derive(Debug, Clone)]
-pub struct ClientConfig {
-    pub server_tick_rate: u32,
-    pub interpolation_delay: u32,
-    pub connection_timeout_secs: u64,
-    pub command_rate: u32,
-    pub ping_interval_secs: f32,
-}
+use dual::{
+    ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, PacketType, Reliability,
+    WorldSnapshot,
+};
 
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            server_tick_rate: 20,
-            interpolation_delay: 2,
-            connection_timeout_secs: 10,
-            command_rate: 60,
-            ping_interval_secs: 1.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct InputState {
-    pub move_direction: [f32; 3],
-    pub view_yaw: f32,
-    pub view_pitch: f32,
-    pub sprint: bool,
-    pub jump: bool,
-    pub crouch: bool,
-    pub fire1: bool,
-    pub fire2: bool,
-    pub use_key: bool,
-    pub reload: bool,
-}
-
-impl InputState {
-    pub fn to_command(&self, tick: u32, sequence: u32) -> ClientCommand {
-        let mut cmd = ClientCommand::new(tick, sequence);
-        cmd.encode_move_direction(self.move_direction);
-        cmd.encode_view_angles(self.view_yaw, self.view_pitch);
-
-        if self.sprint {
-            cmd.set_flag(ClientCommand::FLAG_SPRINT, true);
-        }
-        if self.jump {
-            cmd.set_flag(ClientCommand::FLAG_JUMP, true);
-        }
-        if self.crouch {
-            cmd.set_flag(ClientCommand::FLAG_CROUCH, true);
-        }
-        if self.fire1 {
-            cmd.set_flag(ClientCommand::FLAG_FIRE1, true);
-        }
-        if self.fire2 {
-            cmd.set_flag(ClientCommand::FLAG_FIRE2, true);
-        }
-        if self.use_key {
-            cmd.set_flag(ClientCommand::FLAG_USE, true);
-        }
-        if self.reload {
-            cmd.set_flag(ClientCommand::FLAG_RELOAD, true);
-        }
-
-        cmd
-    }
-}
+use super::config::ClientConfig;
+use super::input::InputState;
+use super::interpolation::{InterpolatedEntity, InterpolationConfig, InterpolationEngine};
+use super::prediction::ClientPrediction;
 
 pub struct NetworkClient {
     endpoint: NetworkEndpoint,
+    connection: ClientConnection,
     config: ClientConfig,
     state: ConnectionState,
     client_id: Option<u32>,
+    entity_id: Option<u32>,
     client_salt: u64,
     server_salt: Option<u64>,
     interpolation: InterpolationEngine,
+    prediction: ClientPrediction,
     command_sequence: u32,
-    last_command_time: Instant,
     command_interval: Duration,
     last_ping_time: Instant,
     ping_interval: Duration,
@@ -93,29 +36,33 @@ pub struct NetworkClient {
     last_server_ack: u32,
     estimated_server_tick: u32,
     clock_offset_ms: i64,
+    input_accumulator: f32,
 }
 
 impl NetworkClient {
     pub fn new(config: ClientConfig) -> io::Result<Self> {
-        let endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
+        let mut endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
+        endpoint.set_timeout(Duration::from_secs(config.connection_timeout_secs));
 
-        let tick_duration = 1.0 / config.server_tick_rate as f32;
-        let interpolation_config = JitterBufferConfig {
-            min_buffer_size: 2,
-            max_buffer_size: 32,
-            interpolation_delay: config.interpolation_delay,
-            tick_duration_secs: tick_duration,
-        };
+        let interpolation_config = InterpolationConfig::default();
+
+        let tick_rate = config.server_tick_rate;
+        let client_salt = Self::generate_salt();
+
+        // Dummy connection initially
+        let connection = ClientConnection::new("127.0.0.1:80".parse().unwrap(), 0, client_salt);
 
         Ok(Self {
             endpoint,
+            connection,
             interpolation: InterpolationEngine::new(interpolation_config),
+            prediction: ClientPrediction::new(tick_rate),
             state: ConnectionState::Disconnected,
             client_id: None,
-            client_salt: Self::generate_salt(),
+            entity_id: None,
+            client_salt,
             server_salt: None,
             command_sequence: 0,
-            last_command_time: Instant::now(),
             command_interval: Duration::from_secs_f64(1.0 / config.command_rate as f64),
             last_ping_time: Instant::now(),
             ping_interval: Duration::from_secs_f32(config.ping_interval_secs),
@@ -124,6 +71,7 @@ impl NetworkClient {
             last_server_ack: 0,
             estimated_server_tick: 0,
             clock_offset_ms: 0,
+            input_accumulator: 0.0,
             config,
         })
     }
@@ -150,6 +98,8 @@ impl NetworkClient {
         self.state = ConnectionState::Connecting;
         self.connection_start_time = Some(Instant::now());
 
+        self.connection = ClientConnection::new(server_addr, 0, self.client_salt);
+
         self.send_connection_request()?;
 
         Ok(())
@@ -157,7 +107,9 @@ impl NetworkClient {
 
     pub fn disconnect(&mut self) -> io::Result<()> {
         if self.state == ConnectionState::Connected {
-            let packet = self.endpoint.create_packet(PacketType::Disconnect);
+            let packet = self
+                .connection
+                .send_packet(PacketType::Disconnect, Reliability::Reliable);
             let _ = self.endpoint.send(&packet);
         }
 
@@ -168,9 +120,11 @@ impl NetworkClient {
     fn reset(&mut self) {
         self.state = ConnectionState::Disconnected;
         self.client_id = None;
+        self.entity_id = None;
         self.server_salt = None;
         self.client_salt = Self::generate_salt();
         self.interpolation.reset();
+        self.prediction.reset();
         self.command_sequence = 0;
         self.connection_start_time = None;
         self.last_server_ack = 0;
@@ -178,15 +132,19 @@ impl NetworkClient {
     }
 
     fn send_connection_request(&mut self) -> io::Result<()> {
-        let packet = self.endpoint.create_packet(PacketType::ConnectionRequest {
-            client_salt: self.client_salt,
-        });
+        let packet = self.connection.send_packet(
+            PacketType::ConnectionRequest {
+                client_salt: self.client_salt,
+            },
+            Reliability::Unreliable,
+        );
         self.endpoint.send(&packet)?;
         Ok(())
     }
 
     pub fn update(&mut self, delta_time: f32, input: Option<&InputState>) -> io::Result<()> {
         self.process_network()?;
+        self.process_resends()?;
 
         match self.state {
             ConnectionState::Connecting | ConnectionState::ChallengeResponse => {
@@ -199,20 +157,36 @@ impl NetworkClient {
             }
             ConnectionState::Connected => {
                 self.interpolation.update(delta_time);
+                self.prediction.update(delta_time);
 
-                if let Some(input) = input {
-                    if self.last_command_time.elapsed() >= self.command_interval {
+                self.input_accumulator += delta_time;
+                let step = self.command_interval.as_secs_f32();
+
+                while self.input_accumulator >= step {
+                    self.input_accumulator -= step;
+
+                    if let Some(input) = input {
+                        let command =
+                            input.to_command(self.estimated_server_tick, self.command_sequence);
+                        
+                        self.prediction.prepare_tick();
+                        self.prediction.apply_input(&command, step);
                         self.send_command(input)?;
-                        self.last_command_time = Instant::now();
                     }
                 }
+
+                let alpha = self.input_accumulator / step;
+                self.prediction.update_visuals(alpha);
 
                 if self.last_ping_time.elapsed() >= self.ping_interval {
                     self.send_ping()?;
                     self.last_ping_time = Instant::now();
                 }
 
-                if self.endpoint.is_timed_out() {
+                if self
+                    .connection
+                    .is_timed_out(Duration::from_secs(self.config.connection_timeout_secs))
+                {
                     log::warn!("Server connection lost");
                     self.reset();
                 }
@@ -223,13 +197,24 @@ impl NetworkClient {
         Ok(())
     }
 
+    fn process_resends(&mut self) -> io::Result<()> {
+        let packets = self.connection.collect_resends();
+        for packet in packets {
+            let _ = self.endpoint.send(&packet);
+        }
+        Ok(())
+    }
+
     fn send_command(&mut self, input: &InputState) -> io::Result<()> {
         let command = input.to_command(self.estimated_server_tick, self.command_sequence);
+        let sequence = self.command_sequence;
         self.command_sequence = self.command_sequence.wrapping_add(1);
 
+        self.prediction.store_command(&command, sequence);
+
         let packet = self
-            .endpoint
-            .create_packet(PacketType::ClientCommand(command));
+            .connection
+            .send_packet(PacketType::ClientCommand(command), Reliability::Unreliable);
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -241,7 +226,9 @@ impl NetworkClient {
             .unwrap()
             .as_millis() as u64;
 
-        let packet = self.endpoint.create_packet(PacketType::Ping { timestamp });
+        let packet = self
+            .connection
+            .send_packet(PacketType::Ping { timestamp }, Reliability::Unreliable);
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -251,22 +238,28 @@ impl NetworkClient {
         let packets = self.endpoint.receive()?;
 
         for (packet, _addr) in packets {
-            self.handle_packet(packet)?;
+            let payloads = self.connection.process_packet(packet);
+            for payload in payloads {
+                self.handle_payload(payload)?;
+            }
         }
 
         Ok(())
     }
 
-    fn handle_packet(&mut self, packet: Packet) -> io::Result<()> {
-        match packet.payload {
+    fn handle_payload(&mut self, payload: PacketType) -> io::Result<()> {
+        match payload {
             PacketType::ConnectionChallenge {
                 server_salt,
                 challenge,
             } => {
                 self.handle_challenge(server_salt, challenge)?;
             }
-            PacketType::ConnectionAccepted { client_id } => {
-                self.handle_connection_accepted(client_id)?;
+            PacketType::ConnectionAccepted {
+                client_id,
+                entity_id,
+            } => {
+                self.handle_connection_accepted(client_id, entity_id)?;
             }
             PacketType::ConnectionDenied { reason } => {
                 self.handle_connection_denied(&reason)?;
@@ -292,6 +285,7 @@ impl NetworkClient {
 
         self.server_salt = Some(server_salt);
         self.state = ConnectionState::ChallengeResponse;
+        self.connection.state = ConnectionState::ChallengeResponse;
 
         let expected_challenge = self.client_salt ^ server_salt;
         if challenge != expected_challenge {
@@ -299,19 +293,30 @@ impl NetworkClient {
             return Ok(());
         }
 
-        let packet = self.endpoint.create_packet(PacketType::ChallengeResponse {
-            combined_salt: expected_challenge,
-        });
+        let packet = self.connection.send_packet(
+            PacketType::ChallengeResponse {
+                combined_salt: expected_challenge,
+            },
+            Reliability::Reliable,
+        );
         self.endpoint.send(&packet)?;
 
         Ok(())
     }
 
-    fn handle_connection_accepted(&mut self, client_id: u32) -> io::Result<()> {
-        log::info!("Connected to server with client ID {}", client_id);
+    fn handle_connection_accepted(&mut self, client_id: u32, entity_id: u32) -> io::Result<()> {
+        log::info!(
+            "Connected to server with client ID {}, entity ID {}",
+            client_id,
+            entity_id
+        );
 
         self.client_id = Some(client_id);
+        self.entity_id = Some(entity_id);
         self.state = ConnectionState::Connected;
+        self.connection.state = ConnectionState::Connected;
+        self.connection.client_id = client_id;
+        self.connection.entity_id = Some(entity_id);
         self.endpoint.set_state(ConnectionState::Connected);
 
         Ok(())
@@ -324,6 +329,8 @@ impl NetworkClient {
     }
 
     fn handle_snapshot(&mut self, snapshot: WorldSnapshot) -> io::Result<()> {
+        let received_tick = snapshot.tick;
+
         self.estimated_server_tick = snapshot
             .tick
             .saturating_add(self.config.interpolation_delay);
@@ -336,8 +343,34 @@ impl NetworkClient {
             .as_millis() as i64;
         self.clock_offset_ms = snapshot.server_time_ms as i64 - local_time;
 
+        if let Some(entity_id) = self.entity_id {
+            if let Some(local_state) = snapshot.entities.iter().find(|e| e.entity_id == entity_id) {
+                let position = Vec3::from(local_state.position);
+                let orientation_arr = local_state.decode_orientation();
+                let orientation = glam::Quat::from_xyzw(
+                    orientation_arr[0],
+                    orientation_arr[1],
+                    orientation_arr[2],
+                    orientation_arr[3],
+                );
+                self.prediction
+                    .reconcile(position, orientation, snapshot.last_command_ack);
+            }
+        }
+
         self.interpolation.push_snapshot(snapshot);
 
+        self.send_snapshot_ack(received_tick)?;
+
+        Ok(())
+    }
+
+    fn send_snapshot_ack(&mut self, received_tick: u32) -> io::Result<()> {
+        let packet = self.connection.send_packet(
+            PacketType::SnapshotAck { received_tick },
+            Reliability::Unreliable,
+        );
+        self.endpoint.send(&packet)?;
         Ok(())
     }
 
@@ -363,6 +396,23 @@ impl NetworkClient {
 
     pub fn client_id(&self) -> Option<u32> {
         self.client_id
+    }
+
+    pub fn entity_id(&self) -> Option<u32> {
+        self.entity_id
+    }
+
+    pub fn local_player(&self) -> Option<&InterpolatedEntity> {
+        self.entity_id
+            .and_then(|id| self.interpolation.get_entity(id))
+    }
+
+    pub fn predicted_position(&self) -> Vec3 {
+        self.prediction.predicted_position()
+    }
+
+    pub fn predicted_orientation(&self) -> glam::Quat {
+        self.prediction.predicted_orientation()
     }
 
     pub fn get_entity(&self, entity_id: u32) -> Option<&InterpolatedEntity> {
@@ -415,32 +465,5 @@ mod tests {
 
         let client = client.unwrap();
         assert_eq!(client.state(), ConnectionState::Disconnected);
-    }
-
-    #[test]
-    fn test_input_to_command() {
-        let input = InputState {
-            move_direction: [1.0, 0.0, 0.0],
-            view_yaw: std::f32::consts::FRAC_PI_4,
-            view_pitch: 0.0,
-            sprint: true,
-            jump: false,
-            crouch: false,
-            fire1: true,
-            fire2: false,
-            use_key: false,
-            reload: false,
-        };
-
-        let command = input.to_command(10, 1);
-
-        assert_eq!(command.tick, 10);
-        assert_eq!(command.command_sequence, 1);
-        assert!(command.has_flag(ClientCommand::FLAG_SPRINT));
-        assert!(command.has_flag(ClientCommand::FLAG_FIRE1));
-        assert!(!command.has_flag(ClientCommand::FLAG_JUMP));
-
-        let decoded = command.decode_move_direction();
-        assert!((decoded[0] - 1.0).abs() < 0.01);
     }
 }

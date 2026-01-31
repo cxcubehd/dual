@@ -1,3 +1,43 @@
 [workspace]
 members = ["crates/*"]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Core
+glam = { version = "0.31", features = ["serde", "rkyv", "bytecheck"] }
+serde = { version = "1.0", features = ["derive"] }
+rkyv = { version = "0.8", features = ["bytecheck"] }
+bitflags = "2.10"
+
+# Async
+tokio = { version = "1.49", features = ["full"] }
+
+# CLI and TUI
+clap = { version = "4.5", features = ["derive"] }
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Graphics (client only)
+wgpu = "28.0"
+winit = "0.30"
+glyphon = "0.10"
+bytemuck = { version = "1.24", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+gltf = "1.4"
+rust-embed = "8.11"
+
+# Internal crates
+dual = { path = "crates/game" }

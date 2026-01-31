@@ -195,6 +195,10 @@ impl World {
         self.entities.values_mut()
     }
 
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
     pub fn generate_snapshot(&self, last_command_ack: u32) -> WorldSnapshot {
         let mut snapshot = WorldSnapshot::new(self.tick, self.server_time_ms());
         snapshot.last_command_ack = last_command_ack;
@@ -202,6 +206,8 @@ impl World {
         for entity in self.entities.values() {
             snapshot.entities.push(entity.to_network_state());
         }
+
+        snapshot.removed_entity_ids = self.removed_entities.clone();
 
         snapshot
     }
@@ -216,6 +222,41 @@ impl World {
             }
         }
 
+        snapshot.removed_entity_ids = self.removed_entities.clone();
+
+        snapshot
+    }
+
+    pub fn generate_delta_from_baseline(
+        &self,
+        baseline: &WorldSnapshot,
+        last_command_ack: u32,
+    ) -> WorldSnapshot {
+        let mut snapshot =
+            WorldSnapshot::new_delta(self.tick, self.server_time_ms(), baseline.tick);
+        snapshot.last_command_ack = last_command_ack;
+
+        let baseline_entities: std::collections::HashMap<u32, &EntityState> =
+            baseline.entities.iter().map(|e| (e.entity_id, e)).collect();
+
+        for entity in self.entities.values() {
+            let current_state = entity.to_network_state();
+
+            if let Some(baseline_state) = baseline_entities.get(&entity.id) {
+                if !entity_states_equal(&current_state, baseline_state) {
+                    snapshot.entities.push(current_state);
+                }
+            } else {
+                snapshot.entities.push(current_state);
+            }
+        }
+
+        for baseline_entity in &baseline.entities {
+            if !self.entities.contains_key(&baseline_entity.entity_id) {
+                snapshot.removed_entity_ids.push(baseline_entity.entity_id);
+            }
+        }
+
         snapshot
     }
 
@@ -227,7 +268,6 @@ impl World {
 #[derive(Debug)]
 pub struct SnapshotBuffer {
     snapshots: Vec<Option<WorldSnapshot>>,
-    write_pos: usize,
     capacity: usize,
 }
 
@@ -235,20 +275,20 @@ impl SnapshotBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             snapshots: (0..capacity).map(|_| None).collect(),
-            write_pos: 0,
             capacity,
         }
     }
 
     pub fn push(&mut self, snapshot: WorldSnapshot) {
-        self.snapshots[self.write_pos] = Some(snapshot);
-        self.write_pos = (self.write_pos + 1) % self.capacity;
+        let index = (snapshot.tick as usize) % self.capacity;
+        self.snapshots[index] = Some(snapshot);
     }
 
     pub fn get_by_tick(&self, tick: u32) -> Option<&WorldSnapshot> {
-        self.snapshots
-            .iter()
-            .find_map(|s| s.as_ref().filter(|snap| snap.tick == tick))
+        let index = (tick as usize) % self.capacity;
+        self.snapshots[index]
+            .as_ref()
+            .filter(|snap| snap.tick == tick)
     }
 
     pub fn get_interpolation_pair(&self) -> Option<(&WorldSnapshot, &WorldSnapshot)> {
@@ -272,15 +312,6 @@ impl SnapshotBuffer {
             .max_by_key(|s| s.tick)
     }
 
-    pub fn get_relative(&self, offset: usize) -> Option<&WorldSnapshot> {
-        let mut snapshots: Vec<&WorldSnapshot> =
-            self.snapshots.iter().filter_map(|s| s.as_ref()).collect();
-
-        snapshots.sort_by_key(|s| std::cmp::Reverse(s.tick));
-
-        snapshots.get(offset).copied()
-    }
-
     pub fn clear(&mut self) {
         for slot in &mut self.snapshots {
             *slot = None;
@@ -294,6 +325,16 @@ impl SnapshotBuffer {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+fn entity_states_equal(a: &EntityState, b: &EntityState) -> bool {
+    a.entity_id == b.entity_id
+        && a.entity_type == b.entity_type
+        && a.position == b.position
+        && a.velocity == b.velocity
+        && a.orientation == b.orientation
+        && a.animation_state == b.animation_state
+        && a.flags == b.flags
 }
 
 #[cfg(test)]
@@ -315,20 +356,16 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_buffer() {
-        let mut buffer = SnapshotBuffer::new(4);
+    fn test_snapshot_buffer_o1_lookup() {
+        let mut buffer = SnapshotBuffer::new(64);
 
-        for tick in 0..6 {
+        for tick in 0..100 {
             buffer.push(WorldSnapshot::new(tick, tick as u64 * 50));
         }
 
-        assert!(buffer.get_by_tick(0).is_none());
-        assert!(buffer.get_by_tick(1).is_none());
-        assert!(buffer.get_by_tick(2).is_some());
-        assert!(buffer.get_by_tick(5).is_some());
-
-        let latest = buffer.latest().unwrap();
-        assert_eq!(latest.tick, 5);
+        assert!(buffer.get_by_tick(50).is_some());
+        assert_eq!(buffer.get_by_tick(50).unwrap().tick, 50);
+        assert!(buffer.get_by_tick(30).is_none());
     }
 
     #[test]
@@ -343,5 +380,70 @@ mod tests {
         assert_eq!(snapshot.tick, 0);
         assert_eq!(snapshot.entities.len(), 2);
         assert!(snapshot.entities.iter().any(|e| e.entity_id == player_id));
+    }
+
+    #[test]
+    fn test_delta_snapshot_only_changed_entities() {
+        let mut world = World::new();
+
+        let player1 = world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+        let _player2 = world.spawn_player(Vec3::new(5.0, 1.0, 0.0));
+
+        let baseline = world.generate_snapshot(0);
+        assert_eq!(baseline.entities.len(), 2);
+
+        world.advance_tick();
+
+        if let Some(entity) = world.get_entity_mut(player1) {
+            entity.position = Vec3::new(1.0, 1.0, 0.0);
+            entity.dirty = true;
+        }
+
+        let delta = world.generate_delta_from_baseline(&baseline, 0);
+
+        assert!(delta.is_delta);
+        assert_eq!(delta.baseline_tick, 0);
+        assert_eq!(delta.entities.len(), 1);
+        assert_eq!(delta.entities[0].entity_id, player1);
+        assert!(delta.removed_entity_ids.is_empty());
+    }
+
+    #[test]
+    fn test_delta_snapshot_includes_removed_entities() {
+        let mut world = World::new();
+
+        let _player1 = world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+        let player2 = world.spawn_player(Vec3::new(5.0, 1.0, 0.0));
+
+        let baseline = world.generate_snapshot(0);
+
+        world.advance_tick();
+        world.despawn_entity(player2);
+
+        let delta = world.generate_delta_from_baseline(&baseline, 0);
+
+        assert!(delta.is_delta);
+        assert_eq!(delta.entities.len(), 0);
+        assert_eq!(delta.removed_entity_ids.len(), 1);
+        assert_eq!(delta.removed_entity_ids[0], player2);
+    }
+
+    #[test]
+    fn test_delta_snapshot_new_entities_included() {
+        let mut world = World::new();
+
+        let _player1 = world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+
+        let baseline = world.generate_snapshot(0);
+        assert_eq!(baseline.entities.len(), 1);
+
+        world.advance_tick();
+        let player2 = world.spawn_player(Vec3::new(5.0, 1.0, 0.0));
+
+        let delta = world.generate_delta_from_baseline(&baseline, 0);
+
+        assert!(delta.is_delta);
+        assert_eq!(delta.entities.len(), 1);
+        assert_eq!(delta.entities[0].entity_id, player2);
     }
 }

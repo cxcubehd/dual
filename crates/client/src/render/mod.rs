@@ -1,6 +1,7 @@
 mod camera;
 mod cube;
 mod debug_overlay;
+mod menu_overlay;
 mod model;
 mod skybox;
 mod texture;
@@ -8,7 +9,8 @@ mod vertex;
 
 pub use camera::Camera;
 use glam::{Mat4, Vec3};
-pub use model::{DrawModel, Material, Mesh, Model};
+pub use menu_overlay::{MenuOption, MenuOverlay};
+pub use model::{DrawModel, Model};
 pub use texture::Texture;
 pub use vertex::ModelVertex;
 
@@ -45,6 +47,51 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// MSAA sample count (4x anti-aliasing)
 const MSAA_SAMPLE_COUNT: u32 = 4;
 
+/// Red cube vertices for player representation
+const PLAYER_CUBE_VERTICES: &[Vertex] = &[
+    // Front face (red)
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        color: [0.1, 0.1, 0.3],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        color: [0.1, 0.1, 0.3],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        color: [0.15, 0.15, 0.4],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        color: [0.15, 0.15, 0.4],
+    },
+    // Back face (darker blue/black)
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        color: [0.0, 0.0, 0.1],
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        color: [0.0, 0.0, 0.1],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        color: [0.05, 0.05, 0.2],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        color: [0.05, 0.05, 0.2],
+    },
+];
+
+/// A player cube instance with its own transform
+struct PlayerCube {
+    transform_buffer: wgpu::Buffer,
+    transform_bind_group: wgpu::BindGroup,
+    visible: bool,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -58,6 +105,7 @@ pub struct Renderer {
     // Camera
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
     camera_bind_group_layout: wgpu::BindGroupLayout,
     // Model pipeline (for textured models)
     model_pipeline: wgpu::RenderPipeline,
@@ -65,12 +113,18 @@ pub struct Renderer {
     model_transform_bind_group_layout: wgpu::BindGroupLayout,
     // Models
     models: Vec<Model>,
+    // Player cubes
+    player_cube_pipeline: wgpu::RenderPipeline,
+    player_cube_vertex_buffer: wgpu::Buffer,
+    player_cube_index_buffer: wgpu::Buffer,
+    player_cubes: Vec<PlayerCube>,
     // Skybox
     skybox: Option<Skybox>,
     // Other
     msaa_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     debug_overlay: DebugOverlay,
+    menu_overlay: MenuOverlay,
     pub size: winit::dpi::PhysicalSize<u32>,
 }
 
@@ -132,6 +186,34 @@ impl Renderer {
             &config,
         );
 
+        // Player cube shader and pipeline
+        let player_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Player Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/player.wgsl").into()),
+        });
+
+        let player_cube_pipeline = Self::create_player_cube_pipeline(
+            &device,
+            &player_shader,
+            &camera_bind_group_layout,
+            &model_transform_bind_group_layout,
+            &config,
+        );
+
+        let player_cube_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Player Cube Vertex Buffer"),
+                contents: vertex::vertices_as_bytes(PLAYER_CUBE_VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        let player_cube_index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Player Cube Index Buffer"),
+                contents: indices_as_bytes(INDICES), // Same indices as legacy cube
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
         let msaa_view = Self::create_msaa_view(&device, &config);
         let depth_view = Self::create_depth_view(&device, &config);
 
@@ -163,6 +245,9 @@ impl Renderer {
             size.height,
         );
 
+        let menu_overlay =
+            MenuOverlay::new(&device, &queue, config.format, size.width, size.height);
+
         let mut renderer = Self {
             surface,
             device,
@@ -179,10 +264,15 @@ impl Renderer {
             texture_bind_group_layout,
             model_transform_bind_group_layout,
             models: Vec::new(),
+            player_cube_pipeline,
+            player_cube_vertex_buffer,
+            player_cube_index_buffer,
+            player_cubes: Vec::new(),
             skybox,
             msaa_view,
             depth_view,
             debug_overlay,
+            menu_overlay,
             size,
         };
 
@@ -216,6 +306,8 @@ impl Renderer {
         self.depth_view = Self::create_depth_view(&self.device, &self.config);
         self.debug_overlay
             .resize(&self.queue, new_size.width, new_size.height);
+        self.menu_overlay
+            .resize(&self.queue, new_size.width, new_size.height);
     }
 
     pub fn update_camera(&self, camera: &Camera) {
@@ -226,6 +318,10 @@ impl Renderer {
 
     pub fn update_debug_overlay(&mut self, fps: f32, tick_rate: f32) {
         self.debug_overlay.update(fps, tick_rate);
+    }
+
+    pub fn menu_overlay(&mut self) -> &mut MenuOverlay {
+        &mut self.menu_overlay
     }
 
     /// Load a GLB model from bytes and add it to the renderer.
@@ -253,28 +349,81 @@ impl Renderer {
     }
 
     /// Load a texture from bytes.
+    #[allow(dead_code)]
     pub fn load_texture_from_bytes(&self, bytes: &[u8], label: &str) -> Result<Texture> {
         Texture::from_bytes(&self.device, &self.queue, bytes, label)
     }
 
     /// Get the texture bind group layout (for custom materials).
+    #[allow(dead_code)]
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.texture_bind_group_layout
     }
 
     /// Get the camera bind group layout.
+    #[allow(dead_code)]
     pub fn camera_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.camera_bind_group_layout
     }
 
     /// Get the number of loaded models.
+    #[allow(dead_code)]
     pub fn model_count(&self) -> usize {
         self.models.len()
     }
 
     /// Clear all loaded models.
+    #[allow(dead_code)]
     pub fn clear_models(&mut self) {
-        self.models.clear();
+        self.models.clear()
+    }
+
+    /// Add a new player cube and return its index.
+    pub fn add_player_cube(&mut self) -> Result<usize> {
+        let transform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Player Cube Transform Buffer"),
+                contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Player Cube Transform Bind Group"),
+            layout: &self.model_transform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let player_cube = PlayerCube {
+            transform_buffer,
+            transform_bind_group,
+            visible: false,
+        };
+
+        let index = self.player_cubes.len();
+        self.player_cubes.push(player_cube);
+        Ok(index)
+    }
+
+    /// Set the transform of a player cube.
+    pub fn set_player_cube_transform(&mut self, index: usize, transform: Mat4) {
+        if let Some(cube) = self.player_cubes.get(index) {
+            self.queue.write_buffer(
+                &cube.transform_buffer,
+                0,
+                bytemuck::cast_slice(&transform.to_cols_array()),
+            );
+        }
+    }
+
+    /// Set the visibility of a player cube.
+    pub fn set_player_cube_visible(&mut self, index: usize, visible: bool) {
+        if let Some(cube) = self.player_cubes.get_mut(index) {
+            cube.visible = visible;
+        }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -288,6 +437,10 @@ impl Renderer {
         let _ = self
             .debug_overlay
             .prepare(&self.device, &self.queue, self.config.width);
+
+        // Prepare menu overlay
+        let _ = self.menu_overlay.prepare(&self.device, &self.queue);
+
         self.record_overlay_pass(&mut encoder, &view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -339,11 +492,28 @@ impl Renderer {
                 pass.draw_model(model, &self.camera_bind_group);
             }
         }
+
+        // Draw player cubes
+        let visible_cubes: Vec<_> = self.player_cubes.iter().filter(|c| c.visible).collect();
+        if !visible_cubes.is_empty() {
+            pass.set_pipeline(&self.player_cube_pipeline);
+            pass.set_vertex_buffer(0, self.player_cube_vertex_buffer.slice(..));
+            pass.set_index_buffer(
+                self.player_cube_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+
+            for cube in visible_cubes {
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &cube.transform_bind_group, &[]);
+                pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            }
+        }
     }
 
     fn record_overlay_pass(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Debug Overlay Pass"),
+            label: Some("Overlay Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -359,6 +529,7 @@ impl Renderer {
             multiview_mask: None,
         });
 
+        let _ = self.menu_overlay.render(&mut pass);
         let _ = self.debug_overlay.render(&mut pass);
     }
 
@@ -535,6 +706,61 @@ impl Renderer {
                 module: shader,
                 entry_point: Some("vs_main"),
                 buffers: &[ModelVertex::layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn create_player_cube_pipeline(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        camera_layout: &wgpu::BindGroupLayout,
+        transform_layout: &wgpu::BindGroupLayout,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> wgpu::RenderPipeline {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Player Cube Pipeline Layout"),
+            bind_group_layouts: &[camera_layout, transform_layout],
+            immediate_size: 0,
+        });
+
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Player Cube Render Pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {

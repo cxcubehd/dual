@@ -10,6 +10,7 @@ use rust_embed::Embed;
 #[folder = "assets/"]
 pub struct Assets;
 
+#[allow(dead_code)]
 impl Assets {
     /// Load a text asset by path.
     ///

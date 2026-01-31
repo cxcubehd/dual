@@ -2,26 +2,29 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 
-use super::protocol::{EntityState, WorldSnapshot};
-use super::snapshot::{Entity, EntityType, SnapshotBuffer};
+use dual::{Entity, EntityState, EntityType, WorldSnapshot};
 
-pub const DEFAULT_INTERPOLATION_DELAY_TICKS: u32 = 2;
+pub const DEFAULT_INTERPOLATION_DELAY_MS: f64 = 100.0;
 
 #[derive(Debug, Clone)]
-pub struct JitterBufferConfig {
-    pub min_buffer_size: usize,
-    pub max_buffer_size: usize,
-    pub interpolation_delay: u32,
-    pub tick_duration_secs: f32,
+pub struct InterpolationConfig {
+    pub target_delay_ms: f64,
+    pub min_buffer_snapshots: usize,
+    pub max_buffer_snapshots: usize,
+    pub time_correction_rate: f64,
+    pub extrapolation_limit_ms: f64,
+    pub snapshot_retention_ms: f64,
 }
 
-impl Default for JitterBufferConfig {
+impl Default for InterpolationConfig {
     fn default() -> Self {
         Self {
-            min_buffer_size: 2,
-            max_buffer_size: 32,
-            interpolation_delay: DEFAULT_INTERPOLATION_DELAY_TICKS,
-            tick_duration_secs: 1.0 / 20.0,
+            target_delay_ms: DEFAULT_INTERPOLATION_DELAY_MS,
+            min_buffer_snapshots: 3,
+            max_buffer_snapshots: 256,
+            time_correction_rate: 0.1,
+            extrapolation_limit_ms: 250.0,
+            snapshot_retention_ms: 3000.0,
         }
     }
 }
@@ -61,125 +64,254 @@ impl InterpolatedEntity {
 }
 
 #[derive(Debug)]
+struct TimedSnapshot {
+    snapshot: WorldSnapshot,
+    server_time_ms: f64,
+}
+
+#[derive(Debug)]
 pub struct InterpolationEngine {
-    buffer: SnapshotBuffer,
-    config: JitterBufferConfig,
-    render_time: f64,
-    from_tick: Option<u32>,
-    to_tick: Option<u32>,
-    interpolation_t: f32,
-    latest_server_tick: u32,
+    config: InterpolationConfig,
+    snapshots: Vec<TimedSnapshot>,
+    server_time_offset_ms: f64,
+    render_time_ms: f64,
     interpolated_entities: HashMap<u32, InterpolatedEntity>,
+    known_entities: HashMap<u32, EntityState>,
     ready: bool,
+    latest_server_tick: u32,
+    last_snapshot_time_ms: f64,
+    is_extrapolating: bool,
+    knowledge_tick: u32,
 }
 
 impl InterpolationEngine {
-    pub fn new(config: JitterBufferConfig) -> Self {
+    pub fn new(config: InterpolationConfig) -> Self {
         Self {
-            buffer: SnapshotBuffer::new(config.max_buffer_size),
             config,
-            render_time: 0.0,
-            from_tick: None,
-            to_tick: None,
-            interpolation_t: 0.0,
-            latest_server_tick: 0,
+            snapshots: Vec::new(),
+            server_time_offset_ms: 0.0,
+            render_time_ms: 0.0,
             interpolated_entities: HashMap::new(),
+            known_entities: HashMap::new(),
             ready: false,
+            latest_server_tick: 0,
+            last_snapshot_time_ms: 0.0,
+            is_extrapolating: false,
+            knowledge_tick: 0,
         }
     }
 
     pub fn with_defaults() -> Self {
-        Self::new(JitterBufferConfig::default())
+        Self::new(InterpolationConfig::default())
     }
 
     pub fn push_snapshot(&mut self, snapshot: WorldSnapshot) {
+        let server_time = snapshot.server_time_ms as f64;
+
         if snapshot.tick > self.latest_server_tick {
             self.latest_server_tick = snapshot.tick;
         }
 
-        self.buffer.push(snapshot);
+        self.last_snapshot_time_ms = current_time_ms();
+        self.is_extrapolating = false;
 
-        if !self.ready && self.buffer.len() >= self.config.min_buffer_size {
-            self.ready = true;
-            self.initialize_interpolation();
+        let local_time = current_time_ms();
+        let new_offset = server_time - local_time;
+
+        if self.snapshots.is_empty() {
+            self.server_time_offset_ms = new_offset;
+            self.render_time_ms = server_time - self.config.target_delay_ms;
+        } else {
+            let correction =
+                (new_offset - self.server_time_offset_ms) * self.config.time_correction_rate;
+            self.server_time_offset_ms += correction;
+        }
+
+        if let Some(full_snapshot) = self.expand_snapshot(snapshot) {
+            let timed = TimedSnapshot {
+                snapshot: full_snapshot,
+                server_time_ms: server_time,
+            };
+
+            let insert_pos = self
+                .snapshots
+                .iter()
+                .position(|s| s.server_time_ms > server_time)
+                .unwrap_or(self.snapshots.len());
+            self.snapshots.insert(insert_pos, timed);
+
+            while self.snapshots.len() > self.config.max_buffer_snapshots {
+                self.snapshots.remove(0);
+            }
+
+            if !self.ready && self.snapshots.len() >= self.config.min_buffer_snapshots {
+                self.ready = true;
+            }
         }
     }
 
-    fn initialize_interpolation(&mut self) {
-        if let Some((from, to)) = self.buffer.get_interpolation_pair() {
-            self.from_tick = Some(from.tick);
-            self.to_tick = Some(to.tick);
-            self.interpolation_t = 0.0;
-
-            let target_tick = self
-                .latest_server_tick
-                .saturating_sub(self.config.interpolation_delay);
-            self.render_time = target_tick as f64 * self.config.tick_duration_secs as f64;
+    fn get_snapshot_by_tick(&self, tick: u32) -> Option<&WorldSnapshot> {
+        for ts in self.snapshots.iter().rev() {
+            if ts.snapshot.tick == tick {
+                return Some(&ts.snapshot);
+            }
         }
+        None
+    }
+
+    fn expand_snapshot(&mut self, snapshot: WorldSnapshot) -> Option<WorldSnapshot> {
+        if !snapshot.is_delta {
+            self.known_entities.clear();
+            for entity in &snapshot.entities {
+                self.known_entities.insert(entity.entity_id, entity.clone());
+            }
+            for removed_id in &snapshot.removed_entity_ids {
+                self.known_entities.remove(removed_id);
+            }
+            self.knowledge_tick = snapshot.tick;
+            return Some(snapshot);
+        }
+
+        if snapshot.baseline_tick != self.knowledge_tick {
+            if let Some(baseline) = self.get_snapshot_by_tick(snapshot.baseline_tick) {
+                // Baseline Recovery
+                let entities = baseline.entities.clone();
+                self.known_entities.clear();
+                for entity in entities {
+                    self.known_entities.insert(entity.entity_id, entity);
+                }
+                self.knowledge_tick = snapshot.baseline_tick;
+            } else {
+                // Baseline lost, cannot reconstruct
+                return None;
+            }
+        }
+
+        for entity in &snapshot.entities {
+            self.known_entities.insert(entity.entity_id, entity.clone());
+        }
+
+        for removed_id in &snapshot.removed_entity_ids {
+            self.known_entities.remove(removed_id);
+        }
+
+        let mut full_snapshot = WorldSnapshot::new(snapshot.tick, snapshot.server_time_ms);
+        full_snapshot.last_command_ack = snapshot.last_command_ack;
+        full_snapshot.entities = self.known_entities.values().cloned().collect();
+
+        self.knowledge_tick = snapshot.tick;
+        Some(full_snapshot)
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        if !self.ready {
+        if !self.ready || self.snapshots.is_empty() {
             return;
         }
 
-        self.render_time += delta_time as f64;
+        let local_time = current_time_ms();
+        let target_render_time =
+            local_time + self.server_time_offset_ms - self.config.target_delay_ms;
 
-        let tick_time = self.config.tick_duration_secs as f64;
-        let current_tick_f = self.render_time / tick_time;
-        let from_tick = current_tick_f.floor() as u32;
-        let to_tick = from_tick + 1;
+        let time_diff = target_render_time - self.render_time_ms;
+        let max_correction = (delta_time as f64 * 1000.0) * 1.5;
+        let correction = time_diff.clamp(-max_correction, max_correction);
+        self.render_time_ms +=
+            (delta_time as f64 * 1000.0) + correction * self.config.time_correction_rate;
 
-        self.interpolation_t = (current_tick_f.fract()) as f32;
+        self.cleanup_old_snapshots();
 
-        let from_snapshot = self.buffer.get_by_tick(from_tick).cloned();
-        let to_snapshot = self.buffer.get_by_tick(to_tick).cloned();
+        if self.snapshots.len() < 2 {
+            self.extrapolate_from_latest(delta_time);
+            return;
+        }
 
-        match (from_snapshot, to_snapshot) {
-            (Some(ref from), Some(ref to)) => {
-                self.from_tick = Some(from.tick);
-                self.to_tick = Some(to.tick);
-                self.interpolate_entities(from, to);
-            }
-            (Some(ref from), None) => {
-                self.from_tick = Some(from.tick);
-                self.to_tick = None;
-                self.extrapolate_entities(from, delta_time);
-            }
-            (None, Some(ref to)) => {
-                self.from_tick = None;
-                self.to_tick = Some(to.tick);
-                self.snap_to_snapshot(to);
-            }
-            (None, None) => {
-                if let Some((from, to)) = self.buffer.get_interpolation_pair() {
-                    self.render_time = from.tick as f64 * tick_time;
-                    self.from_tick = Some(from.tick);
-                    self.to_tick = Some(to.tick);
-                    self.interpolation_t = 0.0;
-                    let from = from.clone();
-                    let to = to.clone();
-                    self.interpolate_entities(&from, &to);
+        if let Some((from_idx, to_idx, t)) = self.find_interpolation_indices() {
+            self.is_extrapolating = t > 1.0;
+            self.interpolate_at_indices(from_idx, to_idx, t);
+        } else {
+            self.extrapolate_from_latest(delta_time);
+        }
+    }
+
+    fn extrapolate_from_latest(&mut self, delta_time: f32) {
+        let time_since_last_snapshot = current_time_ms() - self.last_snapshot_time_ms;
+
+        if time_since_last_snapshot > self.config.extrapolation_limit_ms {
+            return;
+        }
+
+        self.is_extrapolating = true;
+
+        if let Some(latest) = self.snapshots.last() {
+            for state in &latest.snapshot.entities {
+                let entity_id = state.entity_id;
+                let velocity = Vec3::from(state.decode_velocity());
+
+                if let Some(existing) = self.interpolated_entities.get_mut(&entity_id) {
+                    existing.position += velocity * delta_time;
+                } else {
+                    let mut entity = InterpolatedEntity::from_network_state(state);
+                    entity.position += velocity * delta_time;
+                    self.interpolated_entities.insert(entity_id, entity);
                 }
             }
         }
     }
 
-    fn interpolate_entities(&mut self, from: &WorldSnapshot, to: &WorldSnapshot) {
-        let t = self.interpolation_t;
+    fn find_interpolation_indices(&self) -> Option<(usize, usize, f32)> {
+        if self.snapshots.len() < 2 {
+            return None;
+        }
+
+        for i in 0..self.snapshots.len() - 1 {
+            let from = &self.snapshots[i];
+            let to = &self.snapshots[i + 1];
+
+            if from.server_time_ms <= self.render_time_ms
+                && to.server_time_ms >= self.render_time_ms
+            {
+                let duration = to.server_time_ms - from.server_time_ms;
+                let t = if duration > 0.0 {
+                    ((self.render_time_ms - from.server_time_ms) / duration) as f32
+                } else {
+                    0.0
+                };
+                return Some((i, i + 1, t.clamp(0.0, 1.0)));
+            }
+        }
+
+        if self.render_time_ms < self.snapshots[0].server_time_ms {
+            return Some((0, 0, 0.0));
+        }
+
+        let len = self.snapshots.len();
+        let prev = &self.snapshots[len - 2];
+        let last = &self.snapshots[len - 1];
+        let duration = last.server_time_ms - prev.server_time_ms;
+        let t = if duration > 0.0 {
+            ((self.render_time_ms - prev.server_time_ms) / duration) as f32
+        } else {
+            1.0
+        };
+        Some((len - 2, len - 1, t.clamp(0.0, 2.0).min(1.5)))
+    }
+
+    fn interpolate_at_indices(&mut self, from_idx: usize, to_idx: usize, t: f32) {
+        let from = &self.snapshots[from_idx].snapshot;
+        let to = &self.snapshots[to_idx].snapshot;
 
         let to_entities: HashMap<u32, &EntityState> =
             to.entities.iter().map(|e| (e.entity_id, e)).collect();
 
+        self.interpolated_entities.clear();
+
         for from_state in &from.entities {
             let entity_id = from_state.entity_id;
-
             let interpolated = if let Some(to_state) = to_entities.get(&entity_id) {
-                Self::interpolate_entity_states(from_state, to_state, t)
+                interpolate_entity_states(from_state, to_state, t)
             } else {
                 InterpolatedEntity::from_network_state(from_state)
             };
-
             self.interpolated_entities.insert(entity_id, interpolated);
         }
 
@@ -192,82 +324,9 @@ impl InterpolationEngine {
         }
     }
 
-    fn interpolate_entity_states(
-        from: &EntityState,
-        to: &EntityState,
-        t: f32,
-    ) -> InterpolatedEntity {
-        let from_pos = Vec3::from(from.position);
-        let to_pos = Vec3::from(to.position);
-        let position = from_pos.lerp(to_pos, t);
-
-        let from_vel = Vec3::from(from.decode_velocity());
-        let to_vel = Vec3::from(to.decode_velocity());
-        let velocity = from_vel.lerp(to_vel, t);
-
-        let from_quat_arr = from.decode_orientation();
-        let to_quat_arr = to.decode_orientation();
-        let from_quat = Quat::from_xyzw(
-            from_quat_arr[0],
-            from_quat_arr[1],
-            from_quat_arr[2],
-            from_quat_arr[3],
-        )
-        .normalize();
-        let to_quat = Quat::from_xyzw(
-            to_quat_arr[0],
-            to_quat_arr[1],
-            to_quat_arr[2],
-            to_quat_arr[3],
-        )
-        .normalize();
-        let orientation = from_quat.slerp(to_quat, t);
-
-        let from_anim = from.animation_frame as f32 / 255.0;
-        let to_anim = to.animation_frame as f32 / 255.0;
-        let animation_time = if (to_anim - from_anim).abs() > 0.5 {
-            if to_anim < from_anim {
-                let adjusted_to = to_anim + 1.0;
-                (from_anim + (adjusted_to - from_anim) * t) % 1.0
-            } else {
-                let adjusted_from = from_anim + 1.0;
-                (adjusted_from + (to_anim - adjusted_from) * t) % 1.0
-            }
-        } else {
-            from_anim + (to_anim - from_anim) * t
-        };
-
-        InterpolatedEntity {
-            id: from.entity_id,
-            entity_type: EntityType::from(from.entity_type),
-            position,
-            velocity,
-            orientation,
-            animation_state: if t < 0.5 {
-                from.animation_state
-            } else {
-                to.animation_state
-            },
-            animation_time,
-            flags: if t < 0.5 { from.flags } else { to.flags },
-        }
-    }
-
-    fn extrapolate_entities(&mut self, from: &WorldSnapshot, delta_time: f32) {
-        for state in &from.entities {
-            let mut entity = InterpolatedEntity::from_network_state(state);
-            entity.position += entity.velocity * delta_time;
-            entity.animation_time = (entity.animation_time + delta_time) % 1.0;
-            self.interpolated_entities.insert(entity.id, entity);
-        }
-    }
-
-    fn snap_to_snapshot(&mut self, snapshot: &WorldSnapshot) {
-        self.interpolated_entities.clear();
-        for state in &snapshot.entities {
-            let entity = InterpolatedEntity::from_network_state(state);
-            self.interpolated_entities.insert(entity.id, entity);
-        }
+    fn cleanup_old_snapshots(&mut self) {
+        let cutoff = self.render_time_ms - self.config.snapshot_retention_ms;
+        self.snapshots.retain(|s| s.server_time_ms > cutoff);
     }
 
     pub fn get_entity(&self, entity_id: u32) -> Option<&InterpolatedEntity> {
@@ -278,143 +337,116 @@ impl InterpolationEngine {
         self.interpolated_entities.values()
     }
 
-    pub fn interpolation_factor(&self) -> f32 {
-        self.interpolation_t
-    }
-
-    pub fn interpolation_ticks(&self) -> (Option<u32>, Option<u32>) {
-        (self.from_tick, self.to_tick)
-    }
-
     pub fn is_ready(&self) -> bool {
         self.ready
     }
 
-    pub fn render_time(&self) -> f64 {
-        self.render_time
-    }
-
-    pub fn latest_server_tick(&self) -> u32 {
-        self.latest_server_tick
-    }
-
     pub fn reset(&mut self) {
-        self.buffer.clear();
-        self.render_time = 0.0;
-        self.from_tick = None;
-        self.to_tick = None;
-        self.interpolation_t = 0.0;
-        self.latest_server_tick = 0;
+        self.snapshots.clear();
+        self.server_time_offset_ms = 0.0;
+        self.render_time_ms = 0.0;
         self.interpolated_entities.clear();
+        self.known_entities.clear();
         self.ready = false;
+        self.latest_server_tick = 0;
+        self.last_snapshot_time_ms = 0.0;
+        self.is_extrapolating = false;
     }
 
     pub fn debug_stats(&self) -> InterpolationStats {
         InterpolationStats {
-            buffer_size: self.buffer.len(),
-            render_time: self.render_time,
-            from_tick: self.from_tick,
-            to_tick: self.to_tick,
-            interpolation_t: self.interpolation_t,
+            buffer_size: self.snapshots.len(),
+            render_time_ms: self.render_time_ms,
+            server_time_offset_ms: self.server_time_offset_ms,
             latest_server_tick: self.latest_server_tick,
             entity_count: self.interpolated_entities.len(),
             is_ready: self.ready,
+            is_extrapolating: self.is_extrapolating,
+            knowledge_tick: self.knowledge_tick,
         }
     }
+}
+
+fn interpolate_entity_states(from: &EntityState, to: &EntityState, t: f32) -> InterpolatedEntity {
+    let from_pos = Vec3::from(from.position);
+    let to_pos = Vec3::from(to.position);
+    let position = from_pos.lerp(to_pos, t);
+
+    let from_vel = Vec3::from(from.decode_velocity());
+    let to_vel = Vec3::from(to.decode_velocity());
+    let velocity = from_vel.lerp(to_vel, t);
+
+    let from_quat = decode_quat(from);
+    let to_quat = decode_quat(to);
+    let orientation = if from_quat.dot(to_quat) < 0.0 {
+        from_quat.slerp(-to_quat, t)
+    } else {
+        from_quat.slerp(to_quat, t)
+    };
+
+    let from_anim = from.animation_frame as f32 / 255.0;
+    let to_anim = to.animation_frame as f32 / 255.0;
+    let animation_time = lerp_wrapped(from_anim, to_anim, t);
+
+    InterpolatedEntity {
+        id: from.entity_id,
+        entity_type: EntityType::from(from.entity_type),
+        position,
+        velocity,
+        orientation,
+        animation_state: if t < 0.5 {
+            from.animation_state
+        } else {
+            to.animation_state
+        },
+        animation_time,
+        flags: if t < 0.5 { from.flags } else { to.flags },
+    }
+}
+
+fn decode_quat(state: &EntityState) -> Quat {
+    let arr = state.decode_orientation();
+    Quat::from_xyzw(arr[0], arr[1], arr[2], arr[3]).normalize()
+}
+
+fn lerp_wrapped(from: f32, to: f32, t: f32) -> f32 {
+    if (to - from).abs() > 0.5 {
+        if to < from {
+            (from + (to + 1.0 - from) * t) % 1.0
+        } else {
+            (from + 1.0 + (to - from - 1.0) * t) % 1.0
+        }
+    } else {
+        from + (to - from) * t
+    }
+}
+
+fn current_time_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
 }
 
 #[derive(Debug, Clone)]
 pub struct InterpolationStats {
     pub buffer_size: usize,
-    pub render_time: f64,
-    pub from_tick: Option<u32>,
-    pub to_tick: Option<u32>,
-    pub interpolation_t: f32,
+    pub render_time_ms: f64,
+    pub server_time_offset_ms: f64,
     pub latest_server_tick: u32,
     pub entity_count: usize,
     pub is_ready: bool,
-}
-
-pub fn hermite_interpolate(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-
-    let c0 = -0.5 * t3 + t2 - 0.5 * t;
-    let c1 = 1.5 * t3 - 2.5 * t2 + 1.0;
-    let c2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-    let c3 = 0.5 * t3 - 0.5 * t2;
-
-    p0 * c0 + p1 * c1 + p2 * c2 + p3 * c3
-}
-
-pub fn squad_interpolate(q0: Quat, q1: Quat, q2: Quat, q3: Quat, t: f32) -> Quat {
-    let s1 = squad_intermediate(q0, q1, q2);
-    let s2 = squad_intermediate(q1, q2, q3);
-
-    let slerp_q1_q2 = q1.slerp(q2, t);
-    let slerp_s1_s2 = s1.slerp(s2, t);
-
-    slerp_q1_q2.slerp(slerp_s1_s2, 2.0 * t * (1.0 - t))
-}
-
-fn squad_intermediate(q0: Quat, q1: Quat, q2: Quat) -> Quat {
-    let q1_inv = q1.conjugate();
-
-    let log_q0 = quat_log(q1_inv * q0);
-    let log_q2 = quat_log(q1_inv * q2);
-
-    let sum = Vec3::new(
-        log_q0.x + log_q2.x,
-        log_q0.y + log_q2.y,
-        log_q0.z + log_q2.z,
-    ) * -0.25;
-
-    q1 * quat_exp(Quat::from_xyzw(sum.x, sum.y, sum.z, 0.0))
-}
-
-fn quat_log(q: Quat) -> Quat {
-    let v = Vec3::new(q.x, q.y, q.z);
-    let v_len = v.length();
-
-    if v_len < 1e-6 {
-        Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)
-    } else {
-        let theta = v_len.atan2(q.w);
-        let v_normalized = v / v_len;
-        Quat::from_xyzw(
-            v_normalized.x * theta,
-            v_normalized.y * theta,
-            v_normalized.z * theta,
-            0.0,
-        )
-    }
-}
-
-fn quat_exp(q: Quat) -> Quat {
-    let v = Vec3::new(q.x, q.y, q.z);
-    let theta = v.length();
-
-    if theta < 1e-6 {
-        Quat::IDENTITY
-    } else {
-        let sin_theta = theta.sin();
-        let cos_theta = theta.cos();
-        let v_normalized = v / theta;
-        Quat::from_xyzw(
-            v_normalized.x * sin_theta,
-            v_normalized.y * sin_theta,
-            v_normalized.z * sin_theta,
-            cos_theta,
-        )
-    }
+    pub is_extrapolating: bool,
+    pub knowledge_tick: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn create_test_snapshot(tick: u32, entity_count: usize) -> WorldSnapshot {
-        let mut snapshot = WorldSnapshot::new(tick, tick as u64 * 50);
+    fn create_test_snapshot(tick: u32, time_ms: u64, entity_count: usize) -> WorldSnapshot {
+        let mut snapshot = WorldSnapshot::new(tick, time_ms);
         for i in 0..entity_count {
             let mut state = EntityState::new(i as u32, 0);
             state.position = [tick as f32 * 10.0 + i as f32, 0.0, 0.0];
@@ -428,9 +460,9 @@ mod tests {
         let mut engine = InterpolationEngine::with_defaults();
         assert!(!engine.is_ready());
 
-        // Push enough snapshots to initialize
-        engine.push_snapshot(create_test_snapshot(0, 2));
-        engine.push_snapshot(create_test_snapshot(1, 2));
+        engine.push_snapshot(create_test_snapshot(0, 0, 2));
+        engine.push_snapshot(create_test_snapshot(1, 16, 2));
+        engine.push_snapshot(create_test_snapshot(2, 32, 2));
 
         assert!(engine.is_ready());
     }
@@ -443,7 +475,7 @@ mod tests {
         let mut to = EntityState::new(1, 0);
         to.position = [10.0, 20.0, 30.0];
 
-        let result = InterpolationEngine::interpolate_entity_states(&from, &to, 0.5);
+        let result = interpolate_entity_states(&from, &to, 0.5);
 
         assert!((result.position.x - 5.0).abs() < 0.001);
         assert!((result.position.y - 10.0).abs() < 0.001);
@@ -453,17 +485,15 @@ mod tests {
     #[test]
     fn test_slerp_interpolation() {
         let mut from = EntityState::new(1, 0);
-        from.encode_orientation([0.0, 0.0, 0.0, 1.0]); // Identity
+        from.encode_orientation([0.0, 0.0, 0.0, 1.0]);
 
         let mut to = EntityState::new(1, 0);
-        // 90 degrees around Y axis
-        let half_angle = std::f32::consts::FRAC_PI_4; // 45 degrees (half of 90)
+        let half_angle = std::f32::consts::FRAC_PI_4;
         to.encode_orientation([0.0, half_angle.sin(), 0.0, half_angle.cos()]);
 
-        let result = InterpolationEngine::interpolate_entity_states(&from, &to, 0.5);
+        let result = interpolate_entity_states(&from, &to, 0.5);
 
-        // Should be approximately 45 degrees around Y
-        let expected_half = std::f32::consts::FRAC_PI_8; // 22.5 degrees
+        let expected_half = std::f32::consts::FRAC_PI_8;
         assert!((result.orientation.y - expected_half.sin()).abs() < 0.1);
     }
 
@@ -476,7 +506,63 @@ mod tests {
 
         let mid = hermite_interpolate(p0, p1, p2, p3, 0.5);
 
-        // At t=0.5, should be approximately at (0.5, 0, 0)
         assert!((mid.x - 0.5).abs() < 0.1);
     }
+
+    #[test]
+    fn test_baseline_loss_deadlock() {
+        let mut config = InterpolationConfig::default();
+        config.max_buffer_snapshots = 5; // Small buffer to force eviction
+        let mut engine = InterpolationEngine::new(config);
+
+        // 1. Receive Snapshot 10 (Full)
+        let s10 = create_test_snapshot(10, 1000, 1);
+        engine.push_snapshot(s10.clone());
+        assert!(engine.get_snapshot_by_tick(10).is_some());
+
+        // 2. Receive Snapshot 20 (Delta from 10)
+        let mut s20 = create_test_snapshot(20, 2000, 1);
+        s20.is_delta = true;
+        s20.baseline_tick = 10;
+        engine.push_snapshot(s20.clone());
+        assert!(engine.get_snapshot_by_tick(20).is_some());
+
+        // 3. Receive enough snapshots to evict 10
+        for i in 1..=10 {
+            let tick = 20 + i;
+            let time = 2000 + i as u64 * 100;
+            let mut s = create_test_snapshot(tick, time, 1);
+            s.is_delta = true;
+            s.baseline_tick = 20 + i - 1;
+            engine.push_snapshot(s);
+        }
+
+        // Snapshot 10 should be gone now (buffer size 5)
+        assert!(engine.get_snapshot_by_tick(10).is_none());
+
+        // 4. Server thinks we are still at 10 (ACKs lost), sends Delta from 10
+        // (This happens if we haven't successfully ACKed anything since 10, or server lost them)
+        let mut s_late = create_test_snapshot(50, 5000, 1);
+        s_late.is_delta = true;
+        s_late.baseline_tick = 10;
+
+        // This should FAIL to expand because 10 is gone
+        // push_snapshot doesn't return result, so we check if it was added
+        engine.push_snapshot(s_late);
+
+        // It should NOT be in the buffer
+        assert!(engine.get_snapshot_by_tick(50).is_none());
+    }
+}
+
+pub fn hermite_interpolate(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+
+    let c0 = -0.5 * t3 + t2 - 0.5 * t;
+    let c1 = 1.5 * t3 - 2.5 * t2 + 1.0;
+    let c2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
+    let c3 = 0.5 * t3 - 0.5 * t2;
+
+    p0 * c0 + p1 * c1 + p2 * c2 + p3 * c3
 }
