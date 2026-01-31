@@ -12,7 +12,7 @@ impl PacketLossSimulation {
         if !self.enabled || self.loss_percent <= 0.0 {
             return false;
         }
-        rand_percent() < self.loss_percent
+        rand_percent() < (self.loss_percent / 100.0)
     }
 
     pub fn delay_ms(&self) -> u32 {

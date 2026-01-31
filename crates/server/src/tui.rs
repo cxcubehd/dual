@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Table, Row, Cell};
 
 use crate::server::ServerStats;
 
@@ -73,6 +73,7 @@ impl Tab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketLossField {
+    Direction,
     Enabled,
     LossPercent,
     MinLatency,
@@ -83,6 +84,7 @@ pub enum PacketLossField {
 impl PacketLossField {
     fn all() -> &'static [Self] {
         &[
+            Self::Direction,
             Self::Enabled,
             Self::LossPercent,
             Self::MinLatency,
@@ -112,6 +114,7 @@ pub struct ClientInfo {
     pub connected_secs: u64,
     pub last_ping_ms: f32,
     pub packet_loss_sim: PacketLossSimulation,
+    pub incoming_packet_loss_sim: PacketLossSimulation,
 }
 
 pub struct TuiState {
@@ -121,8 +124,14 @@ pub struct TuiState {
     active_tab: Tab,
     selected_connection: usize,
     pending_kick: Option<u32>,
-    packet_loss_panel: Option<PacketLossPanelState>,
-    pending_packet_loss_update: Option<(u32, PacketLossSimulation)>,
+    pub packet_loss_panel: Option<PacketLossPanelState>,
+    pub pending_packet_loss_update: Option<(u32, PacketLossSimulation, PacketLossSimulation)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketDirection {
+    Outgoing,
+    Incoming,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +139,8 @@ pub struct PacketLossPanelState {
     pub client_id: u32,
     pub selected_field: PacketLossField,
     pub sim: PacketLossSimulation,
+    pub incoming_sim: PacketLossSimulation,
+    pub direction: PacketDirection,
 }
 
 impl TuiState {
@@ -232,15 +243,17 @@ impl TuiState {
         if let Some(client) = clients.get(self.selected_connection) {
             self.packet_loss_panel = Some(PacketLossPanelState {
                 client_id: client.client_id,
-                selected_field: PacketLossField::Enabled,
+                selected_field: PacketLossField::Direction,
                 sim: client.packet_loss_sim.clone(),
+                incoming_sim: client.incoming_packet_loss_sim.clone(),
+                direction: PacketDirection::Outgoing,
             });
         }
     }
 
     pub fn close_packet_loss_panel(&mut self) {
         if let Some(panel) = self.packet_loss_panel.take() {
-            self.pending_packet_loss_update = Some((panel.client_id, panel.sim));
+            self.pending_packet_loss_update = Some((panel.client_id, panel.sim, panel.incoming_sim));
         }
     }
 
@@ -262,37 +275,55 @@ impl TuiState {
 
     pub fn packet_loss_panel_adjust(&mut self, delta: i32) {
         if let Some(panel) = &mut self.packet_loss_panel {
+            if panel.selected_field == PacketLossField::Direction {
+                if delta != 0 {
+                    panel.direction = match panel.direction {
+                        PacketDirection::Outgoing => PacketDirection::Incoming,
+                        PacketDirection::Incoming => PacketDirection::Outgoing,
+                    };
+                }
+                return;
+            }
+
+            let sim = match panel.direction {
+                PacketDirection::Outgoing => &mut panel.sim,
+                PacketDirection::Incoming => &mut panel.incoming_sim,
+            };
+
             match panel.selected_field {
+                PacketLossField::Direction => unreachable!(),
                 PacketLossField::Enabled => {
-                    panel.sim.enabled = !panel.sim.enabled;
+                    sim.enabled = !sim.enabled;
                 }
                 PacketLossField::LossPercent => {
-                    let new_val = panel.sim.loss_percent + delta as f32;
-                    panel.sim.loss_percent = new_val.clamp(0.0, 100.0);
+                    let new_val = sim.loss_percent + delta as f32;
+                    sim.loss_percent = new_val.clamp(0.0, 100.0);
                 }
                 PacketLossField::MinLatency => {
-                    let new_val = panel.sim.min_latency_ms as i32 + delta * 5;
-                    panel.sim.min_latency_ms = new_val.clamp(0, 5000) as u32;
-                    if panel.sim.min_latency_ms > panel.sim.max_latency_ms {
-                        panel.sim.max_latency_ms = panel.sim.min_latency_ms;
+                    let new_val = sim.min_latency_ms as i32 + delta * 5;
+                    sim.min_latency_ms = new_val.clamp(0, 5000) as u32;
+                    if sim.min_latency_ms > sim.max_latency_ms {
+                        sim.max_latency_ms = sim.min_latency_ms;
                     }
                 }
                 PacketLossField::MaxLatency => {
-                    let new_val = panel.sim.max_latency_ms as i32 + delta * 5;
-                    panel.sim.max_latency_ms = new_val.clamp(0, 5000) as u32;
-                    if panel.sim.max_latency_ms < panel.sim.min_latency_ms {
-                        panel.sim.min_latency_ms = panel.sim.max_latency_ms;
+                    let new_val = sim.max_latency_ms as i32 + delta * 5;
+                    sim.max_latency_ms = new_val.clamp(0, 5000) as u32;
+                    if sim.max_latency_ms < sim.min_latency_ms {
+                        sim.min_latency_ms = sim.max_latency_ms;
                     }
                 }
                 PacketLossField::Jitter => {
-                    let new_val = panel.sim.jitter_ms as i32 + delta * 5;
-                    panel.sim.jitter_ms = new_val.clamp(0, 1000) as u32;
+                    let new_val = sim.jitter_ms as i32 + delta * 5;
+                    sim.jitter_ms = new_val.clamp(0, 1000) as u32;
                 }
             }
         }
     }
 
-    pub fn take_pending_packet_loss_update(&mut self) -> Option<(u32, PacketLossSimulation)> {
+    pub fn take_pending_packet_loss_update(
+        &mut self,
+    ) -> Option<(u32, PacketLossSimulation, PacketLossSimulation)> {
         self.pending_packet_loss_update.take()
     }
 
@@ -437,44 +468,75 @@ fn render_connections(frame: &mut Frame, area: Rect, state: &TuiState, clients: 
         return;
     }
 
-    let items: Vec<ListItem> = clients
+    let header = Row::new(vec![
+        Cell::from("ID"),
+        Cell::from("Address"),
+        Cell::from("Entity"),
+        Cell::from("Time"),
+        Cell::from("RTT"),
+        Cell::from("Sim"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = clients
         .iter()
         .enumerate()
         .map(|(i, client)| {
             let connected = format_duration(client.connected_secs);
             let entity_str = client
                 .entity_id
-                .map(|e| format!("E#{}", e))
+                .map(|e| format!("{}", e))
                 .unwrap_or_else(|| "-".to_string());
 
-            let sim_indicator = if client.packet_loss_sim.enabled {
-                format!(" [SIM: {:.0}%]", client.packet_loss_sim.loss_percent)
+            let sim_status =
+                if client.packet_loss_sim.enabled && client.incoming_packet_loss_sim.enabled {
+                    Span::styled("BOTH", Style::default().fg(Color::Red))
+                } else if client.packet_loss_sim.enabled {
+                    Span::styled("OUT", Style::default().fg(Color::Yellow))
+                } else if client.incoming_packet_loss_sim.enabled {
+                    Span::styled("IN", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::raw("-")
+                };
+
+            let cells = vec![
+                Cell::from(format!("{}", client.client_id)),
+                Cell::from(client.addr.as_str()),
+                Cell::from(entity_str),
+                Cell::from(connected),
+                Cell::from(format!("{:.0}ms", client.last_ping_ms)),
+                Cell::from(sim_status),
+            ];
+
+            let row = Row::new(cells);
+            if i == state.selected_connection {
+                row.style(Style::default().fg(Color::Black).bg(Color::White))
             } else {
-                String::new()
-            };
-
-            let content = format!(
-                "#{:02} | {} | {} | {} | RTT: {:.0}ms{}",
-                client.client_id,
-                client.addr,
-                entity_str,
-                connected,
-                client.last_ping_ms,
-                sim_indicator
-            );
-
-            let style = if i == state.selected_connection {
-                Style::default().fg(Color::Black).bg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            ListItem::new(content).style(style)
+                row.style(Style::default().fg(Color::White))
+            }
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(5),
+            Constraint::Length(25),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(6),
+        ],
+    )
+    .header(header)
+    .block(block);
+
+    frame.render_widget(table, area);
 }
 
 fn render_help(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -504,7 +566,7 @@ fn render_help(frame: &mut Frame, area: Rect, state: &TuiState) {
 fn render_packet_loss_panel(frame: &mut Frame, panel: &PacketLossPanelState) {
     let area = frame.area();
     let panel_width = 50;
-    let panel_height = 12;
+    let panel_height = 14;
     let x = (area.width.saturating_sub(panel_width)) / 2;
     let y = (area.height.saturating_sub(panel_height)) / 2;
     let panel_area = Rect::new(
@@ -534,35 +596,51 @@ fn render_packet_loss_panel(frame: &mut Frame, panel: &PacketLossPanelState) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
         ])
         .split(panel_area);
 
+    let sim = match panel.direction {
+        PacketDirection::Outgoing => &panel.sim,
+        PacketDirection::Incoming => &panel.incoming_sim,
+    };
+
+    let direction_str = match panel.direction {
+        PacketDirection::Outgoing => "Outgoing (S->C)",
+        PacketDirection::Incoming => "Incoming (C->S)",
+    };
+
     let fields = [
+        (
+            PacketLossField::Direction,
+            "Direction",
+            direction_str.to_string(),
+        ),
         (
             PacketLossField::Enabled,
             "Enabled",
-            if panel.sim.enabled { "Yes" } else { "No" }.to_string(),
+            if sim.enabled { "Yes" } else { "No" }.to_string(),
         ),
         (
             PacketLossField::LossPercent,
             "Packet Loss",
-            format!("{:.1}%", panel.sim.loss_percent),
+            format!("{:.1}%", sim.loss_percent),
         ),
         (
             PacketLossField::MinLatency,
             "Min Latency",
-            format!("{} ms", panel.sim.min_latency_ms),
+            format!("{} ms", sim.min_latency_ms),
         ),
         (
             PacketLossField::MaxLatency,
             "Max Latency",
-            format!("{} ms", panel.sim.max_latency_ms),
+            format!("{} ms", sim.max_latency_ms),
         ),
         (
             PacketLossField::Jitter,
             "Jitter",
-            format!("{} ms", panel.sim.jitter_ms),
+            format!("{} ms", sim.jitter_ms),
         ),
     ];
 

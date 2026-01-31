@@ -141,8 +141,8 @@ fn run_with_tui(server: &mut GameServer) -> io::Result<()> {
             server.kick_client(client_id);
         }
 
-        if let Some((client_id, sim)) = tui_state.take_pending_packet_loss_update() {
-            server.set_packet_loss_sim(client_id, sim);
+        if let Some((client_id, sim, incoming_sim)) = tui_state.take_pending_packet_loss_update() {
+            server.set_packet_loss_sim(client_id, sim, incoming_sim);
         }
 
         if event::poll(Duration::from_millis(1))? {

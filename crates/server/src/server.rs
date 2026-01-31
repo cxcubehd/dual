@@ -58,6 +58,7 @@ pub struct GameServer {
     snapshot_history: SnapshotBuffer,
     command_queue: VecDeque<QueuedCommand>,
     delayed_packets: BinaryHeap<DelayedPacket>,
+    delayed_incoming_packets: BinaryHeap<DelayedPacket>,
     tick: u32,
     tick_duration: Duration,
     last_tick_time: Instant,
@@ -85,6 +86,7 @@ impl GameServer {
             snapshot_history: SnapshotBuffer::new(config.snapshot_buffer_size),
             command_queue: VecDeque::new(),
             delayed_packets: BinaryHeap::new(),
+            delayed_incoming_packets: BinaryHeap::new(),
             tick: 0,
             tick_duration,
             last_tick_time: Instant::now(),
@@ -325,19 +327,58 @@ impl GameServer {
         let packets = self.endpoint.receive()?;
 
         for (packet, addr) in packets {
-            if let Some(client) = self.connections.get_by_addr_mut(&addr) {
-                let payloads = client.process_packet(packet);
-                for payload in payloads {
-                    self.handle_payload(payload, addr)?;
-                }
+            let mut delay = 0;
+            let mut should_drop = false;
+
+            if let Some(client) = self.connections.get_by_addr(&addr) {
+                should_drop = client.incoming_packet_loss_sim.should_drop();
+                delay = client.incoming_packet_loss_sim.delay_ms();
+            } else if let Some(ref sim) = self.config.global_packet_loss {
+                should_drop = sim.should_drop();
+                delay = sim.delay_ms();
+            }
+
+            if should_drop {
+                continue;
+            }
+
+            if delay > 0 {
+                self.delayed_incoming_packets.push(DelayedPacket {
+                    send_time: Instant::now() + Duration::from_millis(delay as u64),
+                    packet,
+                    addr,
+                });
             } else {
-                // No connection, check if it's a request
-                if let PacketType::ConnectionRequest { .. } = packet.payload {
-                    self.handle_payload(packet.payload, addr)?;
-                }
+                self.handle_received_packet(packet, addr)?;
             }
         }
 
+        let now = Instant::now();
+        while let Some(packet) = self.delayed_incoming_packets.peek() {
+            if packet.send_time <= now {
+                let DelayedPacket { packet, addr, .. } =
+                    self.delayed_incoming_packets.pop().unwrap();
+                self.handle_received_packet(packet, addr)?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_received_packet(&mut self, packet: Packet, addr: SocketAddr) -> io::Result<()> {
+        if let Some(client) = self.connections.get_by_addr_mut(&addr) {
+            let payloads = client.process_packet(packet);
+            for payload in payloads {
+                self.handle_payload(payload, addr)?;
+            }
+        } else {
+            // No connection, check if it's a request
+            if let PacketType::ConnectionRequest { .. } = packet.payload {
+                self.handle_payload(packet.payload, addr)?;
+            }
+        }
         Ok(())
     }
 
@@ -393,7 +434,8 @@ impl GameServer {
         };
 
         if let Some(sim) = global_packet_loss {
-            client.packet_loss_sim = sim;
+            client.packet_loss_sim = sim.clone();
+            client.incoming_packet_loss_sim = sim;
         }
 
         let server_salt = client.server_salt;
@@ -529,13 +571,20 @@ impl GameServer {
                 connected_secs: c.last_receive_time.elapsed().as_secs(),
                 last_ping_ms: self.endpoint.stats().rtt_ms,
                 packet_loss_sim: c.packet_loss_sim.clone(),
+                incoming_packet_loss_sim: c.incoming_packet_loss_sim.clone(),
             })
             .collect()
     }
 
-    pub fn set_packet_loss_sim(&mut self, client_id: u32, sim: PacketLossSimulation) {
+    pub fn set_packet_loss_sim(
+        &mut self,
+        client_id: u32,
+        sim: PacketLossSimulation,
+        incoming_sim: PacketLossSimulation,
+    ) {
         if let Some(client) = self.connections.get_mut(client_id) {
             client.packet_loss_sim = sim;
+            client.incoming_packet_loss_sim = incoming_sim;
         }
     }
 }

@@ -42,6 +42,7 @@ pub struct ClientConnection {
     // Network stats/simulation
     pub last_receive_time: Instant,
     pub packet_loss_sim: PacketLossSimulation,
+    pub incoming_packet_loss_sim: PacketLossSimulation,
 
     // Reliability - Send
     pub send_sequence: u32,
@@ -77,6 +78,7 @@ impl ClientConnection {
             entity_id: None,
             lobby_id: None,
             packet_loss_sim: PacketLossSimulation::default(),
+            incoming_packet_loss_sim: PacketLossSimulation::default(),
 
             send_sequence: 0,
             ack_tracker: AckTracker::new(1024),
