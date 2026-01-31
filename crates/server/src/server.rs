@@ -9,7 +9,7 @@ use glam::Vec3;
 
 use dual::{
     ClientCommand, ConnectionManager, ConnectionState, EntityType, NetworkEndpoint, NetworkStats,
-    Packet, PacketHeader, PacketType, SnapshotBuffer, World,
+    Packet, PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World,
 };
 
 #[derive(Debug, Clone)]
@@ -246,9 +246,9 @@ impl GameServer {
 
             let (sin_yaw, cos_yaw) = yaw.sin_cos();
             let world_move = Vec3::new(
-                normalized.x * cos_yaw - normalized.z * sin_yaw,
+                normalized.x * cos_yaw + normalized.z * sin_yaw,
                 normalized.y,
-                normalized.x * sin_yaw + normalized.z * cos_yaw,
+                -normalized.x * sin_yaw + normalized.z * cos_yaw,
             );
 
             entity.velocity = world_move * speed;
@@ -284,14 +284,28 @@ impl GameServer {
     }
 
     fn broadcast_snapshots(&mut self) {
-        let client_data: Vec<(SocketAddr, u32, u32)> = self
+        let client_data: Vec<(SocketAddr, u32, u32, bool)> = self
             .connections
             .iter()
             .filter(|c| c.state == ConnectionState::Connected)
-            .map(|c| (c.addr, c.last_command_ack, c.send_sequence))
+            .map(|c| {
+                (
+                    c.addr,
+                    c.last_command_ack,
+                    c.send_sequence,
+                    c.packet_loss_sim.should_drop(),
+                )
+            })
             .collect();
 
-        for (addr, last_cmd_ack, send_seq) in client_data {
+        for (addr, last_cmd_ack, send_seq, should_drop) in client_data {
+            if should_drop {
+                if let Some(client) = self.connections.get_by_addr_mut(&addr) {
+                    client.send_sequence = client.send_sequence.wrapping_add(1);
+                }
+                continue;
+            }
+
             let snapshot = self.world.generate_snapshot(last_cmd_ack);
 
             let header = PacketHeader::new(send_seq, 0, 0);
@@ -494,8 +508,15 @@ impl GameServer {
                 entity_id: c.entity_id,
                 connected_secs: c.last_receive_time.elapsed().as_secs(),
                 last_ping_ms: self.endpoint.stats().rtt_ms,
+                packet_loss_sim: c.packet_loss_sim.clone(),
             })
             .collect()
+    }
+
+    pub fn set_packet_loss_sim(&mut self, client_id: u32, sim: PacketLossSimulation) {
+        if let Some(client) = self.connections.get_mut(client_id) {
+            client.packet_loss_sim = sim;
+        }
     }
 }
 

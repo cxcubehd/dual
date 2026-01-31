@@ -11,5 +11,5 @@ pub use protocol::{
 pub use snapshot::{Entity, EntityType, SnapshotBuffer, World};
 pub use transport::{
     AckTracker, ClientConnection, ConnectionManager, ConnectionState, NetworkEndpoint,
-    NetworkStats, PendingPacket, ReceiveTracker,
+    NetworkStats, PacketLossSimulation, PendingPacket, ReceiveTracker,
 };

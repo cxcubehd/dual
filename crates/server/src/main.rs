@@ -107,35 +107,57 @@ fn run_with_tui(server: &mut GameServer) -> io::Result<()> {
             server.kick_client(client_id);
         }
 
+        if let Some((client_id, sim)) = tui_state.take_pending_packet_loss_update() {
+            server.set_packet_loss_sim(client_id, sim);
+        }
+
         if event::poll(Duration::from_millis(1))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     let clients = server.client_infos();
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            running.store(false, Ordering::SeqCst);
+
+                    if tui_state.is_packet_loss_panel_open() {
+                        match key.code {
+                            KeyCode::Esc => tui_state.cancel_packet_loss_panel(),
+                            KeyCode::Enter => tui_state.close_packet_loss_panel(),
+                            KeyCode::Up => tui_state.packet_loss_panel_prev_field(),
+                            KeyCode::Down => tui_state.packet_loss_panel_next_field(),
+                            KeyCode::Left => tui_state.packet_loss_panel_adjust(-1),
+                            KeyCode::Right => tui_state.packet_loss_panel_adjust(1),
+                            _ => {}
                         }
-                        KeyCode::Tab => tui_state.next_tab(),
-                        KeyCode::BackTab => tui_state.prev_tab(),
-                        KeyCode::PageUp => tui_state.scroll_up(),
-                        KeyCode::PageDown => tui_state.scroll_down(),
-                        KeyCode::End => tui_state.scroll_to_bottom(),
-                        KeyCode::Up => {
-                            if tui_state.active_tab() == tui::Tab::Connections {
-                                tui_state.select_prev_connection(clients.len());
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                running.store(false, Ordering::SeqCst);
                             }
-                        }
-                        KeyCode::Down => {
-                            if tui_state.active_tab() == tui::Tab::Connections {
-                                tui_state.select_next_connection(clients.len());
+                            KeyCode::Tab => tui_state.next_tab(),
+                            KeyCode::BackTab => tui_state.prev_tab(),
+                            KeyCode::PageUp => tui_state.scroll_up(),
+                            KeyCode::PageDown => tui_state.scroll_down(),
+                            KeyCode::End => tui_state.scroll_to_bottom(),
+                            KeyCode::Up => {
+                                if tui_state.active_tab() == tui::Tab::Connections {
+                                    tui_state.select_prev_connection(clients.len());
+                                }
                             }
-                        }
-                        KeyCode::Char('k') | KeyCode::Char('K') => {
-                            if tui_state.active_tab() == tui::Tab::Connections {
-                                tui_state.request_kick(&clients);
+                            KeyCode::Down => {
+                                if tui_state.active_tab() == tui::Tab::Connections {
+                                    tui_state.select_next_connection(clients.len());
+                                }
                             }
+                            KeyCode::Enter => {
+                                if tui_state.active_tab() == tui::Tab::Connections {
+                                    tui_state.open_packet_loss_panel(&clients);
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Char('K') => {
+                                if tui_state.active_tab() == tui::Tab::Connections {
+                                    tui_state.request_kick(&clients);
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }

@@ -62,6 +62,11 @@ impl Tui {
 
             if let Some(client) = &mut self.client {
                 let _ = client.update(0.016, None);
+
+                if client.is_connected() && self.screen == Screen::Connecting {
+                    self.should_launch = true;
+                    continue;
+                }
             }
 
             if event::poll(Duration::from_millis(50))? {
@@ -220,12 +225,6 @@ impl Tui {
             Action::ChangeScreen(screen) => {
                 self.screen = screen;
                 self.selected_index = 0;
-            }
-        }
-
-        if let Some(client) = &self.client {
-            if client.is_connected() && self.screen == Screen::Connecting {
-                self.should_launch = true;
             }
         }
 

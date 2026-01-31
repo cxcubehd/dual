@@ -8,6 +8,17 @@ pub const DEFAULT_TICK_RATE: u32 = 60;
 
 const SEQUENCE_WRAP_THRESHOLD: u32 = u32::MAX / 2;
 
+fn normalize_angle(angle: f32) -> f32 {
+    let two_pi = std::f32::consts::TAU;
+    let mut normalized = angle % two_pi;
+    if normalized > std::f32::consts::PI {
+        normalized -= two_pi;
+    } else if normalized < -std::f32::consts::PI {
+        normalized += two_pi;
+    }
+    normalized
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct PacketHeader {
@@ -147,7 +158,8 @@ impl ClientCommand {
     }
 
     pub fn encode_view_angles(&mut self, yaw: f32, pitch: f32) {
-        self.view_angles = [(yaw * 10000.0) as i16, (pitch * 10000.0) as i16];
+        let normalized_yaw = normalize_angle(yaw);
+        self.view_angles = [(normalized_yaw * 10000.0) as i16, (pitch * 10000.0) as i16];
     }
 
     #[inline]

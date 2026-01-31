@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use dual::PacketLossSimulation;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 use ratatui::Frame;
 
 use crate::server::ServerStats;
@@ -70,6 +71,39 @@ impl Tab {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketLossField {
+    Enabled,
+    LossPercent,
+    MinLatency,
+    MaxLatency,
+    Jitter,
+}
+
+impl PacketLossField {
+    fn all() -> &'static [Self] {
+        &[
+            Self::Enabled,
+            Self::LossPercent,
+            Self::MinLatency,
+            Self::MaxLatency,
+            Self::Jitter,
+        ]
+    }
+
+    fn next(&self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|f| f == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    fn prev(&self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|f| f == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientInfo {
     pub client_id: u32,
@@ -77,6 +111,7 @@ pub struct ClientInfo {
     pub entity_id: Option<u32>,
     pub connected_secs: u64,
     pub last_ping_ms: f32,
+    pub packet_loss_sim: PacketLossSimulation,
 }
 
 pub struct TuiState {
@@ -86,6 +121,15 @@ pub struct TuiState {
     active_tab: Tab,
     selected_connection: usize,
     pending_kick: Option<u32>,
+    packet_loss_panel: Option<PacketLossPanelState>,
+    pending_packet_loss_update: Option<(u32, PacketLossSimulation)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PacketLossPanelState {
+    pub client_id: u32,
+    pub selected_field: PacketLossField,
+    pub sim: PacketLossSimulation,
 }
 
 impl TuiState {
@@ -97,6 +141,8 @@ impl TuiState {
             active_tab: Tab::Console,
             selected_connection: 0,
             pending_kick: None,
+            packet_loss_panel: None,
+            pending_packet_loss_update: None,
         }
     }
 
@@ -178,6 +224,82 @@ impl TuiState {
         self.active_tab
     }
 
+    pub fn is_packet_loss_panel_open(&self) -> bool {
+        self.packet_loss_panel.is_some()
+    }
+
+    pub fn open_packet_loss_panel(&mut self, clients: &[ClientInfo]) {
+        if let Some(client) = clients.get(self.selected_connection) {
+            self.packet_loss_panel = Some(PacketLossPanelState {
+                client_id: client.client_id,
+                selected_field: PacketLossField::Enabled,
+                sim: client.packet_loss_sim.clone(),
+            });
+        }
+    }
+
+    pub fn close_packet_loss_panel(&mut self) {
+        if let Some(panel) = self.packet_loss_panel.take() {
+            self.pending_packet_loss_update = Some((panel.client_id, panel.sim));
+        }
+    }
+
+    pub fn cancel_packet_loss_panel(&mut self) {
+        self.packet_loss_panel = None;
+    }
+
+    pub fn packet_loss_panel_next_field(&mut self) {
+        if let Some(panel) = &mut self.packet_loss_panel {
+            panel.selected_field = panel.selected_field.next();
+        }
+    }
+
+    pub fn packet_loss_panel_prev_field(&mut self) {
+        if let Some(panel) = &mut self.packet_loss_panel {
+            panel.selected_field = panel.selected_field.prev();
+        }
+    }
+
+    pub fn packet_loss_panel_adjust(&mut self, delta: i32) {
+        if let Some(panel) = &mut self.packet_loss_panel {
+            match panel.selected_field {
+                PacketLossField::Enabled => {
+                    panel.sim.enabled = !panel.sim.enabled;
+                }
+                PacketLossField::LossPercent => {
+                    let new_val = panel.sim.loss_percent + delta as f32;
+                    panel.sim.loss_percent = new_val.clamp(0.0, 100.0);
+                }
+                PacketLossField::MinLatency => {
+                    let new_val = panel.sim.min_latency_ms as i32 + delta * 5;
+                    panel.sim.min_latency_ms = new_val.clamp(0, 5000) as u32;
+                    if panel.sim.min_latency_ms > panel.sim.max_latency_ms {
+                        panel.sim.max_latency_ms = panel.sim.min_latency_ms;
+                    }
+                }
+                PacketLossField::MaxLatency => {
+                    let new_val = panel.sim.max_latency_ms as i32 + delta * 5;
+                    panel.sim.max_latency_ms = new_val.clamp(0, 5000) as u32;
+                    if panel.sim.max_latency_ms < panel.sim.min_latency_ms {
+                        panel.sim.min_latency_ms = panel.sim.max_latency_ms;
+                    }
+                }
+                PacketLossField::Jitter => {
+                    let new_val = panel.sim.jitter_ms as i32 + delta * 5;
+                    panel.sim.jitter_ms = new_val.clamp(0, 1000) as u32;
+                }
+            }
+        }
+    }
+
+    pub fn take_pending_packet_loss_update(&mut self) -> Option<(u32, PacketLossSimulation)> {
+        self.pending_packet_loss_update.take()
+    }
+
+    pub fn packet_loss_panel(&self) -> Option<&PacketLossPanelState> {
+        self.packet_loss_panel.as_ref()
+    }
+
     fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
     }
@@ -204,6 +326,10 @@ pub fn render(frame: &mut Frame, state: &TuiState, stats: &ServerStats, clients:
     }
 
     render_help(frame, chunks[3], state);
+
+    if let Some(panel) = state.packet_loss_panel() {
+        render_packet_loss_panel(frame, panel);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, stats: &ServerStats, uptime_secs: u64) {
@@ -321,9 +447,20 @@ fn render_connections(frame: &mut Frame, area: Rect, state: &TuiState, clients: 
                 .map(|e| format!("E#{}", e))
                 .unwrap_or_else(|| "-".to_string());
 
+            let sim_indicator = if client.packet_loss_sim.enabled {
+                format!(" [SIM: {:.0}%]", client.packet_loss_sim.loss_percent)
+            } else {
+                String::new()
+            };
+
             let content = format!(
-                "#{:02} | {} | {} | {} | RTT: {:.0}ms",
-                client.client_id, client.addr, entity_str, connected, client.last_ping_ms
+                "#{:02} | {} | {} | {} | RTT: {:.0}ms{}",
+                client.client_id,
+                client.addr,
+                entity_str,
+                connected,
+                client.last_ping_ms,
+                sim_indicator
             );
 
             let style = if i == state.selected_connection {
@@ -341,9 +478,15 @@ fn render_connections(frame: &mut Frame, area: Rect, state: &TuiState, clients: 
 }
 
 fn render_help(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let help_text = match state.active_tab {
-        Tab::Console => "Tab: Switch | PgUp/PgDn: Scroll | End: Latest | q/Esc: Quit",
-        Tab::Connections => "Tab: Switch | Up/Down: Select | K: Kick | q/Esc: Quit",
+    let help_text = if state.is_packet_loss_panel_open() {
+        "Up/Down: Select | Left/Right: Adjust | Enter: Save | Esc: Cancel"
+    } else {
+        match state.active_tab {
+            Tab::Console => "Tab: Switch | PgUp/PgDn: Scroll | End: Latest | q/Esc: Quit",
+            Tab::Connections => {
+                "Tab: Switch | Up/Down: Select | Enter: Settings | K: Kick | q/Esc: Quit"
+            }
+        }
     };
 
     let block = Block::default()
@@ -356,6 +499,85 @@ fn render_help(frame: &mut Frame, area: Rect, state: &TuiState) {
         .style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(paragraph, area);
+}
+
+fn render_packet_loss_panel(frame: &mut Frame, panel: &PacketLossPanelState) {
+    let area = frame.area();
+    let panel_width = 50;
+    let panel_height = 12;
+    let x = (area.width.saturating_sub(panel_width)) / 2;
+    let y = (area.height.saturating_sub(panel_height)) / 2;
+    let panel_area = Rect::new(
+        x,
+        y,
+        panel_width.min(area.width),
+        panel_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(format!(
+            " Packet Loss Simulation - Client {} ",
+            panel.client_id
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    frame.render_widget(block, panel_area);
+
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(panel_area);
+
+    let fields = [
+        (
+            PacketLossField::Enabled,
+            "Enabled",
+            if panel.sim.enabled { "Yes" } else { "No" }.to_string(),
+        ),
+        (
+            PacketLossField::LossPercent,
+            "Packet Loss",
+            format!("{:.1}%", panel.sim.loss_percent),
+        ),
+        (
+            PacketLossField::MinLatency,
+            "Min Latency",
+            format!("{} ms", panel.sim.min_latency_ms),
+        ),
+        (
+            PacketLossField::MaxLatency,
+            "Max Latency",
+            format!("{} ms", panel.sim.max_latency_ms),
+        ),
+        (
+            PacketLossField::Jitter,
+            "Jitter",
+            format!("{} ms", panel.sim.jitter_ms),
+        ),
+    ];
+
+    for (i, (field, label, value)) in fields.iter().enumerate() {
+        let is_selected = panel.selected_field == *field;
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(Color::White)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let line = format!("{:<15} {}", format!("{}:", label), value);
+        let paragraph = Paragraph::new(line).style(style);
+        frame.render_widget(paragraph, inner[i]);
+    }
 }
 
 fn format_duration(secs: u64) -> String {

@@ -7,6 +7,53 @@ use std::time::{Duration, Instant};
 
 use super::protocol::{sequence_greater_than, Packet, PacketHeader, PacketType, MAX_PACKET_SIZE};
 
+#[derive(Debug, Clone, Default)]
+pub struct PacketLossSimulation {
+    pub enabled: bool,
+    pub loss_percent: f32,
+    pub min_latency_ms: u32,
+    pub max_latency_ms: u32,
+    pub jitter_ms: u32,
+}
+
+impl PacketLossSimulation {
+    pub fn should_drop(&self) -> bool {
+        if !self.enabled || self.loss_percent <= 0.0 {
+            return false;
+        }
+        rand_percent() < self.loss_percent
+    }
+
+    pub fn delay_ms(&self) -> u32 {
+        if !self.enabled || self.max_latency_ms == 0 {
+            return 0;
+        }
+        let base = self.min_latency_ms;
+        let range = self.max_latency_ms.saturating_sub(self.min_latency_ms);
+        let jitter = if self.jitter_ms > 0 {
+            (rand_percent() * self.jitter_ms as f32) as u32
+        } else {
+            0
+        };
+        base + (rand_percent() * range as f32) as u32 + jitter
+    }
+}
+
+fn rand_percent() -> f32 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+    (hasher.finish() % 10000) as f32 / 10000.0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Disconnected,
@@ -200,6 +247,7 @@ pub struct ClientConnection {
     pub receive_tracker: ReceiveTracker,
     pub send_sequence: u32,
     pub lobby_id: Option<u64>,
+    pub packet_loss_sim: PacketLossSimulation,
 }
 
 impl ClientConnection {
@@ -216,6 +264,7 @@ impl ClientConnection {
             receive_tracker: ReceiveTracker::new(),
             send_sequence: 0,
             lobby_id: None,
+            packet_loss_sim: PacketLossSimulation::default(),
         }
     }
 
