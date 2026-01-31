@@ -168,7 +168,7 @@ impl NetworkClient {
                     if let Some(input) = input {
                         let command =
                             input.to_command(self.estimated_server_tick, self.command_sequence);
-                        
+
                         self.prediction.prepare_tick();
                         self.prediction.apply_input(&command, step);
                         self.send_command(input)?;

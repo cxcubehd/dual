@@ -17,8 +17,8 @@ struct PendingCommand {
 
 pub struct ClientPrediction {
     pending_commands: VecDeque<PendingCommand>,
-    position: Vec3, // Logical position (current tick)
-    prev_position: Vec3, // Logical position (previous tick)
+    position: Vec3,        // Logical position (current tick)
+    prev_position: Vec3,   // Logical position (previous tick)
     visual_position: Vec3, // Interpolated + Smoothed position for rendering
     orientation: Quat,
     position_error: Vec3,
@@ -188,16 +188,16 @@ mod tests {
     #[test]
     fn test_smoothing() {
         let mut prediction = ClientPrediction::new(60);
-        
+
         // Initial state
         prediction.prepare_tick();
         prediction.store_command(&ClientCommand::new(0, 0), 1);
-        
+
         // Logic starts at (0, 1, 0).
         // Server says (0.5, 1, 0). Error 0.5.
         // Reconcile: Logic += 0.5 => 0.5. Error -= 0.5 => -0.5.
         // Visual = Logic + Error = 0.5 - 0.5 = 0.
-        
+
         prediction.reconcile(Vec3::new(0.5, 1.0, 0.0), Quat::IDENTITY, 1);
 
         assert_eq!(prediction.position, Vec3::new(0.5, 1.0, 0.0)); // Logic shifted
@@ -213,7 +213,7 @@ mod tests {
         // Update error decay
         prediction.update(0.05); // Error decays. -0.5 becomes closer to 0 (e.g. -0.18 using speed 20).
         prediction.update_visuals(0.0);
-        
+
         // Visual moves towards Logic (0.5).
         assert!(prediction.predicted_position().x > 0.1);
         assert!(prediction.predicted_position().x < 0.5);
@@ -223,15 +223,14 @@ mod tests {
     fn test_interpolation() {
         let mut prediction = ClientPrediction::new(60);
         // Start at 0.
-        prediction.prepare_tick(); 
+        prediction.prepare_tick();
         // Move to 1.
         prediction.position = Vec3::new(1.0, 1.0, 0.0);
-        
+
         // Prev = 0. Curr = 1.
-        
+
         // Alpha 0.5
         prediction.update_visuals(0.5);
         assert!((prediction.predicted_position().x - 0.5).abs() < 0.0001);
     }
 }
-
