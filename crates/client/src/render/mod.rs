@@ -50,15 +50,15 @@ const MSAA_SAMPLE_COUNT: u32 = 4;
 /// Red cube vertices for player representation
 const PLAYER_CUBE_VERTICES: &[Vertex] = &[
     // Front face (red)
-    Vertex { position: [-0.5, -0.5, 0.5], color: [0.9, 0.2, 0.2] },
-    Vertex { position: [0.5, -0.5, 0.5], color: [0.9, 0.2, 0.2] },
-    Vertex { position: [0.5, 0.5, 0.5], color: [1.0, 0.3, 0.3] },
-    Vertex { position: [-0.5, 0.5, 0.5], color: [1.0, 0.3, 0.3] },
-    // Back face (darker red)
-    Vertex { position: [-0.5, -0.5, -0.5], color: [0.7, 0.1, 0.1] },
-    Vertex { position: [0.5, -0.5, -0.5], color: [0.7, 0.1, 0.1] },
-    Vertex { position: [0.5, 0.5, -0.5], color: [0.8, 0.15, 0.15] },
-    Vertex { position: [-0.5, 0.5, -0.5], color: [0.8, 0.15, 0.15] },
+    Vertex { position: [-0.5, -0.5, 0.5], color: [0.1, 0.1, 0.3] },
+    Vertex { position: [0.5, -0.5, 0.5], color: [0.1, 0.1, 0.3] },
+    Vertex { position: [0.5, 0.5, 0.5], color: [0.15, 0.15, 0.4] },
+    Vertex { position: [-0.5, 0.5, 0.5], color: [0.15, 0.15, 0.4] },
+    // Back face (darker blue/black)
+    Vertex { position: [-0.5, -0.5, -0.5], color: [0.0, 0.0, 0.1] },
+    Vertex { position: [0.5, -0.5, -0.5], color: [0.0, 0.0, 0.1] },
+    Vertex { position: [0.5, 0.5, -0.5], color: [0.05, 0.05, 0.2] },
+    Vertex { position: [-0.5, 0.5, -0.5], color: [0.05, 0.05, 0.2] },
 ];
 
 /// A player cube instance with its own transform
