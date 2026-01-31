@@ -7,7 +7,7 @@ use dual::ClientCommand;
 const MAX_PENDING_COMMANDS: usize = 128;
 const ERROR_CORRECTION_SPEED: f32 = 20.0;
 const ERROR_THRESHOLD: f32 = 0.0001;
-const SNAP_THRESHOLD: f32 = 3.0;
+const SNAP_THRESHOLD: f32 = 1.0;
 
 #[derive(Debug, Clone)]
 struct PendingCommand {
@@ -132,6 +132,7 @@ impl ClientPrediction {
                 cmd.position_after += server_error;
             }
         } else {
+            self.position_error = server_error;
             for cmd in &mut self.pending_commands {
                 cmd.position_after += server_error;
             }
