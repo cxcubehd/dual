@@ -14,7 +14,7 @@ impl Default for ServerConfig {
         Self {
             tick_rate: 60,
             max_clients: 32,
-            snapshot_buffer_size: 64,
+            snapshot_buffer_size: 256,
             snapshot_send_rate: 1,
             global_packet_loss: None,
         }

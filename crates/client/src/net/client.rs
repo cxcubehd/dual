@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 
 use dual::{
-    ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType,
-    Reliability, WorldSnapshot,
+    ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, PacketType, Reliability,
+    WorldSnapshot,
 };
 
 use super::config::ClientConfig;
@@ -44,13 +44,7 @@ impl NetworkClient {
         let mut endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
         endpoint.set_timeout(Duration::from_secs(config.connection_timeout_secs));
 
-        let interpolation_config = InterpolationConfig {
-            target_delay_ms: 100.0,
-            min_buffer_snapshots: 3,
-            max_buffer_snapshots: 64,
-            time_correction_rate: 0.1,
-            extrapolation_limit_ms: 250.0,
-        };
+        let interpolation_config = InterpolationConfig::default();
 
         let tick_rate = config.server_tick_rate;
         let client_salt = Self::generate_salt();

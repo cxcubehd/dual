@@ -20,7 +20,7 @@ impl Default for InterpolationConfig {
         Self {
             target_delay_ms: DEFAULT_INTERPOLATION_DELAY_MS,
             min_buffer_snapshots: 3,
-            max_buffer_snapshots: 64,
+            max_buffer_snapshots: 256,
             time_correction_rate: 0.1,
             extrapolation_limit_ms: 250.0,
         }
@@ -79,6 +79,7 @@ pub struct InterpolationEngine {
     latest_server_tick: u32,
     last_snapshot_time_ms: f64,
     is_extrapolating: bool,
+    knowledge_tick: u32,
 }
 
 impl InterpolationEngine {
@@ -94,6 +95,7 @@ impl InterpolationEngine {
             latest_server_tick: 0,
             last_snapshot_time_ms: 0.0,
             is_extrapolating: false,
+            knowledge_tick: 0,
         }
     }
 
@@ -123,38 +125,64 @@ impl InterpolationEngine {
             self.server_time_offset_ms += correction;
         }
 
-        let full_snapshot = self.expand_snapshot(snapshot);
+        if let Some(full_snapshot) = self.expand_snapshot(snapshot) {
+            let timed = TimedSnapshot {
+                snapshot: full_snapshot,
+                server_time_ms: server_time,
+            };
 
-        let timed = TimedSnapshot {
-            snapshot: full_snapshot,
-            server_time_ms: server_time,
-        };
+            let insert_pos = self
+                .snapshots
+                .iter()
+                .position(|s| s.server_time_ms > server_time)
+                .unwrap_or(self.snapshots.len());
+            self.snapshots.insert(insert_pos, timed);
 
-        let insert_pos = self
-            .snapshots
-            .iter()
-            .position(|s| s.server_time_ms > server_time)
-            .unwrap_or(self.snapshots.len());
-        self.snapshots.insert(insert_pos, timed);
+            while self.snapshots.len() > self.config.max_buffer_snapshots {
+                self.snapshots.remove(0);
+            }
 
-        while self.snapshots.len() > self.config.max_buffer_snapshots {
-            self.snapshots.remove(0);
-        }
-
-        if !self.ready && self.snapshots.len() >= self.config.min_buffer_snapshots {
-            self.ready = true;
+            if !self.ready && self.snapshots.len() >= self.config.min_buffer_snapshots {
+                self.ready = true;
+            }
         }
     }
 
-    fn expand_snapshot(&mut self, snapshot: WorldSnapshot) -> WorldSnapshot {
+    fn get_snapshot_by_tick(&self, tick: u32) -> Option<&WorldSnapshot> {
+        for ts in self.snapshots.iter().rev() {
+            if ts.snapshot.tick == tick {
+                return Some(&ts.snapshot);
+            }
+        }
+        None
+    }
+
+    fn expand_snapshot(&mut self, snapshot: WorldSnapshot) -> Option<WorldSnapshot> {
         if !snapshot.is_delta {
+            self.known_entities.clear();
             for entity in &snapshot.entities {
                 self.known_entities.insert(entity.entity_id, entity.clone());
             }
             for removed_id in &snapshot.removed_entity_ids {
                 self.known_entities.remove(removed_id);
             }
-            return snapshot;
+            self.knowledge_tick = snapshot.tick;
+            return Some(snapshot);
+        }
+
+        if snapshot.baseline_tick != self.knowledge_tick {
+            if let Some(baseline) = self.get_snapshot_by_tick(snapshot.baseline_tick) {
+                // Baseline Recovery
+                let entities = baseline.entities.clone();
+                self.known_entities.clear();
+                for entity in entities {
+                    self.known_entities.insert(entity.entity_id, entity);
+                }
+                self.knowledge_tick = snapshot.baseline_tick;
+            } else {
+                // Baseline lost, cannot reconstruct
+                return None;
+            }
         }
 
         for entity in &snapshot.entities {
@@ -169,7 +197,8 @@ impl InterpolationEngine {
         full_snapshot.last_command_ack = snapshot.last_command_ack;
         full_snapshot.entities = self.known_entities.values().cloned().collect();
 
-        full_snapshot
+        self.knowledge_tick = snapshot.tick;
+        Some(full_snapshot)
     }
 
     pub fn update(&mut self, delta_time: f32) {
@@ -331,6 +360,7 @@ impl InterpolationEngine {
             entity_count: self.interpolated_entities.len(),
             is_ready: self.ready,
             is_extrapolating: self.is_extrapolating,
+            knowledge_tick: self.knowledge_tick,
         }
     }
 }
@@ -406,6 +436,7 @@ pub struct InterpolationStats {
     pub entity_count: usize,
     pub is_ready: bool,
     pub is_extrapolating: bool,
+    pub knowledge_tick: u32,
 }
 
 #[cfg(test)]

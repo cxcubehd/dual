@@ -70,7 +70,7 @@ pub struct GameServer {
 
 impl GameServer {
     pub fn new(bind_addr: &str, config: ServerConfig) -> io::Result<Self> {
-        let mut endpoint = NetworkEndpoint::bind(bind_addr)?;
+        let endpoint = NetworkEndpoint::bind(bind_addr)?;
         let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
 
         let mut pending_events = VecDeque::new();
