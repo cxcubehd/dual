@@ -208,9 +208,7 @@ impl App {
                 return;
             }
 
-            if let Some(local_player) = client.local_player() {
-                game.camera.position = local_player.position;
-            }
+            game.camera.position = client.predicted_position();
 
             Self::update_player_cubes(&mut self.player_cube_indices, client, renderer);
         }

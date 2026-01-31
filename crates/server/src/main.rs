@@ -1,4 +1,7 @@
+mod config;
+mod events;
 mod server;
+mod simulation;
 mod tui;
 
 use std::io;
@@ -13,7 +16,9 @@ use crossterm::{cursor, execute};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use server::{GameServer, ServerConfig, ServerEvent};
+use config::ServerConfig;
+use events::ServerEvent;
+use server::GameServer;
 use tui::TuiState;
 
 #[derive(Parser)]

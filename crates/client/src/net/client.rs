@@ -4,79 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dual::{
-    ClientCommand, ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType,
-    WorldSnapshot,
-};
+use glam::Vec3;
 
-use super::interpolation::{InterpolatedEntity, InterpolationEngine, JitterBufferConfig};
+use dual::{ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType, WorldSnapshot};
 
-#[derive(Debug, Clone)]
-pub struct ClientConfig {
-    pub server_tick_rate: u32,
-    pub interpolation_delay: u32,
-    pub connection_timeout_secs: u64,
-    pub command_rate: u32,
-    pub ping_interval_secs: f32,
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            server_tick_rate: 60,
-            interpolation_delay: 2,
-            connection_timeout_secs: 10,
-            command_rate: 60,
-            ping_interval_secs: 1.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct InputState {
-    pub move_direction: [f32; 3],
-    pub view_yaw: f32,
-    pub view_pitch: f32,
-    pub sprint: bool,
-    pub jump: bool,
-    pub crouch: bool,
-    pub fire1: bool,
-    pub fire2: bool,
-    pub use_key: bool,
-    pub reload: bool,
-}
-
-impl InputState {
-    pub fn to_command(&self, tick: u32, sequence: u32) -> ClientCommand {
-        let mut cmd = ClientCommand::new(tick, sequence);
-        cmd.encode_move_direction(self.move_direction);
-        cmd.encode_view_angles(self.view_yaw, self.view_pitch);
-
-        if self.sprint {
-            cmd.set_flag(ClientCommand::FLAG_SPRINT, true);
-        }
-        if self.jump {
-            cmd.set_flag(ClientCommand::FLAG_JUMP, true);
-        }
-        if self.crouch {
-            cmd.set_flag(ClientCommand::FLAG_CROUCH, true);
-        }
-        if self.fire1 {
-            cmd.set_flag(ClientCommand::FLAG_FIRE1, true);
-        }
-        if self.fire2 {
-            cmd.set_flag(ClientCommand::FLAG_FIRE2, true);
-        }
-        if self.use_key {
-            cmd.set_flag(ClientCommand::FLAG_USE, true);
-        }
-        if self.reload {
-            cmd.set_flag(ClientCommand::FLAG_RELOAD, true);
-        }
-
-        cmd
-    }
-}
+use super::config::ClientConfig;
+use super::input::InputState;
+use super::interpolation::{InterpolatedEntity, InterpolationConfig, InterpolationEngine};
+use super::prediction::ClientPrediction;
 
 pub struct NetworkClient {
     endpoint: NetworkEndpoint,
@@ -87,6 +22,7 @@ pub struct NetworkClient {
     client_salt: u64,
     server_salt: Option<u64>,
     interpolation: InterpolationEngine,
+    prediction: ClientPrediction,
     command_sequence: u32,
     last_command_time: Instant,
     command_interval: Duration,
@@ -103,17 +39,19 @@ impl NetworkClient {
     pub fn new(config: ClientConfig) -> io::Result<Self> {
         let endpoint = NetworkEndpoint::bind("0.0.0.0:0")?;
 
-        let tick_duration = 1.0 / config.server_tick_rate as f32;
-        let interpolation_config = JitterBufferConfig {
-            min_buffer_size: 2,
-            max_buffer_size: 32,
-            interpolation_delay: config.interpolation_delay,
-            tick_duration_secs: tick_duration,
+        let interpolation_config = InterpolationConfig {
+            target_delay_ms: 100.0,
+            min_buffer_snapshots: 3,
+            max_buffer_snapshots: 64,
+            time_correction_rate: 0.1,
         };
+
+        let tick_rate = config.server_tick_rate;
 
         Ok(Self {
             endpoint,
             interpolation: InterpolationEngine::new(interpolation_config),
+            prediction: ClientPrediction::new(tick_rate),
             state: ConnectionState::Disconnected,
             client_id: None,
             entity_id: None,
@@ -177,6 +115,7 @@ impl NetworkClient {
         self.server_salt = None;
         self.client_salt = Self::generate_salt();
         self.interpolation.reset();
+        self.prediction.reset();
         self.command_sequence = 0;
         self.connection_start_time = None;
         self.last_server_ack = 0;
@@ -207,6 +146,10 @@ impl NetworkClient {
                 self.interpolation.update(delta_time);
 
                 if let Some(input) = input {
+                    let command =
+                        input.to_command(self.estimated_server_tick, self.command_sequence);
+                    self.prediction.apply_input(&command, delta_time);
+
                     if self.last_command_time.elapsed() >= self.command_interval {
                         self.send_command(input)?;
                         self.last_command_time = Instant::now();
@@ -231,7 +174,10 @@ impl NetworkClient {
 
     fn send_command(&mut self, input: &InputState) -> io::Result<()> {
         let command = input.to_command(self.estimated_server_tick, self.command_sequence);
+        let sequence = self.command_sequence;
         self.command_sequence = self.command_sequence.wrapping_add(1);
+
+        self.prediction.store_command(&command, sequence);
 
         let packet = self
             .endpoint
@@ -350,6 +296,21 @@ impl NetworkClient {
             .as_millis() as i64;
         self.clock_offset_ms = snapshot.server_time_ms as i64 - local_time;
 
+        if let Some(entity_id) = self.entity_id {
+            if let Some(local_state) = snapshot.entities.iter().find(|e| e.entity_id == entity_id) {
+                let position = Vec3::from(local_state.position);
+                let orientation_arr = local_state.decode_orientation();
+                let orientation = glam::Quat::from_xyzw(
+                    orientation_arr[0],
+                    orientation_arr[1],
+                    orientation_arr[2],
+                    orientation_arr[3],
+                );
+                self.prediction
+                    .reconcile(position, orientation, snapshot.last_command_ack);
+            }
+        }
+
         self.interpolation.push_snapshot(snapshot);
 
         Ok(())
@@ -386,6 +347,14 @@ impl NetworkClient {
     pub fn local_player(&self) -> Option<&InterpolatedEntity> {
         self.entity_id
             .and_then(|id| self.interpolation.get_entity(id))
+    }
+
+    pub fn predicted_position(&self) -> Vec3 {
+        self.prediction.predicted_position()
+    }
+
+    pub fn predicted_orientation(&self) -> glam::Quat {
+        self.prediction.predicted_orientation()
     }
 
     pub fn get_entity(&self, entity_id: u32) -> Option<&InterpolatedEntity> {
@@ -438,32 +407,5 @@ mod tests {
 
         let client = client.unwrap();
         assert_eq!(client.state(), ConnectionState::Disconnected);
-    }
-
-    #[test]
-    fn test_input_to_command() {
-        let input = InputState {
-            move_direction: [1.0, 0.0, 0.0],
-            view_yaw: std::f32::consts::FRAC_PI_4,
-            view_pitch: 0.0,
-            sprint: true,
-            jump: false,
-            crouch: false,
-            fire1: true,
-            fire2: false,
-            use_key: false,
-            reload: false,
-        };
-
-        let command = input.to_command(10, 1);
-
-        assert_eq!(command.tick, 10);
-        assert_eq!(command.command_sequence, 1);
-        assert!(command.has_flag(ClientCommand::FLAG_SPRINT));
-        assert!(command.has_flag(ClientCommand::FLAG_FIRE1));
-        assert!(!command.has_flag(ClientCommand::FLAG_JUMP));
-
-        let decoded = command.decode_move_direction();
-        assert!((decoded[0] - 1.0).abs() < 0.01);
     }
 }

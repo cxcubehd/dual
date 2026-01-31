@@ -8,28 +8,13 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 
 use dual::{
-    ClientCommand, ConnectionManager, ConnectionState, EntityType, NetworkEndpoint, NetworkStats,
-    Packet, PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World,
+    ClientCommand, ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats, Packet,
+    PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World,
 };
 
-#[derive(Debug, Clone)]
-pub struct ServerConfig {
-    pub tick_rate: u32,
-    pub max_clients: usize,
-    pub snapshot_buffer_size: usize,
-    pub snapshot_send_rate: u32,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            tick_rate: 60,
-            max_clients: 32,
-            snapshot_buffer_size: 64,
-            snapshot_send_rate: 1,
-        }
-    }
-}
+use crate::config::ServerConfig;
+use crate::events::{DisconnectReason, ServerEvent};
+use crate::simulation::{apply_command, simulate_world};
 
 #[derive(Debug)]
 struct QueuedCommand {
@@ -52,46 +37,6 @@ pub struct GameServer {
     #[allow(dead_code)]
     start_time: Instant,
     pending_events: VecDeque<ServerEvent>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ServerEvent {
-    ClientConnecting {
-        addr: SocketAddr,
-    },
-    ClientConnected {
-        client_id: u32,
-        addr: SocketAddr,
-        entity_id: u32,
-    },
-    ClientDisconnected {
-        client_id: u32,
-        reason: DisconnectReason,
-    },
-    ConnectionDenied {
-        addr: SocketAddr,
-        reason: String,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum DisconnectReason {
-    Graceful,
-    Timeout,
-    Kicked,
-}
-
-impl DisconnectReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DisconnectReason::Graceful => "disconnected",
-            DisconnectReason::Timeout => "timed out",
-            DisconnectReason::Kicked => "kicked",
-        }
-    }
 }
 
 impl GameServer {
@@ -189,7 +134,9 @@ impl GameServer {
 
     fn tick(&mut self) {
         self.process_commands();
-        self.simulate();
+
+        let dt = 1.0 / self.config.tick_rate as f32;
+        simulate_world(&mut self.world, dt);
 
         self.world.advance_tick();
         self.tick = self.world.tick();
@@ -212,6 +159,8 @@ impl GameServer {
     }
 
     fn process_commands(&mut self) {
+        let dt = 1.0 / self.config.tick_rate as f32;
+
         while let Some(queued) = self.command_queue.pop_front() {
             if let Some(client) = self.connections.get_mut(queued.client_id) {
                 if queued.command.command_sequence > client.last_command_ack {
@@ -219,66 +168,10 @@ impl GameServer {
                 }
 
                 if let Some(entity_id) = client.entity_id {
-                    self.apply_command(entity_id, &queued.command);
-                }
-            }
-        }
-    }
-
-    fn apply_command(&mut self, entity_id: u32, command: &ClientCommand) {
-        let Some(entity) = self.world.get_entity_mut(entity_id) else {
-            return;
-        };
-
-        let dt = 1.0 / self.config.tick_rate as f32;
-        let move_dir = command.decode_move_direction();
-        let (yaw, pitch) = command.decode_view_angles();
-
-        let speed = if command.has_flag(ClientCommand::FLAG_SPRINT) {
-            10.0
-        } else {
-            5.0
-        };
-
-        let move_vec = Vec3::new(move_dir[0], move_dir[1], move_dir[2]);
-        if move_vec.length_squared() > 0.001 {
-            let normalized = move_vec.normalize();
-
-            let (sin_yaw, cos_yaw) = yaw.sin_cos();
-            let world_move = Vec3::new(
-                normalized.x * cos_yaw + normalized.z * sin_yaw,
-                normalized.y,
-                -normalized.x * sin_yaw + normalized.z * cos_yaw,
-            );
-
-            entity.velocity = world_move * speed;
-            entity.position += entity.velocity * dt;
-        } else {
-            entity.velocity = Vec3::ZERO;
-        }
-
-        entity.orientation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
-        entity.dirty = true;
-    }
-
-    fn simulate(&mut self) {
-        let dt = 1.0 / self.config.tick_rate as f32;
-
-        for entity in self.world.entities_mut() {
-            match entity.entity_type {
-                EntityType::Projectile => {
-                    entity.velocity.y -= 9.8 * dt;
-                    entity.position += entity.velocity * dt;
-
-                    if entity.position.y < 0.0 {
-                        entity.position.y = 0.0;
-                        entity.velocity = Vec3::ZERO;
+                    if let Some(entity) = self.world.get_entity_mut(entity_id) {
+                        apply_command(entity, &queued.command, dt);
                     }
-
-                    entity.dirty = true;
                 }
-                EntityType::Player => {}
-                _ => {}
             }
         }
     }
