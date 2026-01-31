@@ -27,16 +27,24 @@ pub struct PacketHeader {
     pub sequence: u32,
     pub ack: u32,
     pub ack_bitfield: u32,
+    pub channel: u8,
+    pub channel_seq: u16,
 }
 
 impl PacketHeader {
-    pub fn new(sequence: u32, ack: u32, ack_bitfield: u32) -> Self {
+    pub const CHANNEL_UNRELIABLE: u8 = 0;
+    pub const CHANNEL_RELIABLE: u8 = 1;
+    pub const CHANNEL_ORDERED: u8 = 2;
+
+    pub fn new(sequence: u32, ack: u32, ack_bitfield: u32, channel: u8, channel_seq: u16) -> Self {
         Self {
             magic: PROTOCOL_MAGIC,
             version: PROTOCOL_VERSION,
             sequence,
             ack,
             ack_bitfield,
+            channel,
+            channel_seq,
         }
     }
 
@@ -346,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_packet_serialization() {
-        let header = PacketHeader::new(1, 0, 0);
+        let header = PacketHeader::new(1, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
         let payload = PacketType::Ping { timestamp: 12345 };
         let packet = Packet::new(header, payload);
 

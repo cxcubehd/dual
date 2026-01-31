@@ -9,7 +9,8 @@ use glam::Vec3;
 
 use dual::{
     ClientCommand, ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats, Packet,
-    PacketHeader, PacketLossSimulation, PacketType, SnapshotBuffer, World, WorldSnapshot,
+    PacketHeader, PacketLossSimulation, PacketType, Reliability, SnapshotBuffer, World,
+    WorldSnapshot,
 };
 
 use crate::config::ServerConfig;
@@ -70,7 +71,6 @@ pub struct GameServer {
 impl GameServer {
     pub fn new(bind_addr: &str, config: ServerConfig) -> io::Result<Self> {
         let mut endpoint = NetworkEndpoint::bind(bind_addr)?;
-        endpoint.set_server_mode(true);
         let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
 
         let mut pending_events = VecDeque::new();
@@ -124,10 +124,9 @@ impl GameServer {
     }
 
     pub fn kick_client(&mut self, client_id: u32) {
-        if let Some(client) = self.connections.get(client_id) {
+        if let Some(client) = self.connections.get_mut(client_id) {
             let addr = client.addr;
-            let header = PacketHeader::new(0, 0, 0);
-            let packet = Packet::new(header, PacketType::Disconnect);
+            let packet = client.send_packet(PacketType::Disconnect, Reliability::Reliable);
             let _ = self.endpoint.send_to(&packet, addr);
         }
 
@@ -155,11 +154,26 @@ impl GameServer {
             });
         }
 
+        self.process_resends();
         self.process_delayed_packets();
 
         while self.accumulator >= self.tick_duration {
             self.accumulator -= self.tick_duration;
             self.tick();
+        }
+    }
+
+    fn process_resends(&mut self) {
+        let mut packets_to_send = Vec::new();
+        for client in self.connections.iter_mut() {
+            let resends = client.collect_resends();
+            for packet in resends {
+                packets_to_send.push((client.addr, packet));
+            }
+        }
+
+        for (addr, packet) in packets_to_send {
+            let _ = self.send_packet_simulated(packet, addr);
         }
     }
 
@@ -271,14 +285,7 @@ impl GameServer {
         let current_tick = self.tick;
         let max_delta_age = self.config.snapshot_buffer_size as u32 / 2;
 
-        for (addr, last_cmd_ack, last_acked_tick, send_seq, should_drop, delay) in client_data {
-            if should_drop {
-                if let Some(client) = self.connections.get_by_addr_mut(&addr) {
-                    client.send_sequence = client.send_sequence.wrapping_add(1);
-                }
-                continue;
-            }
-
+        for (addr, last_cmd_ack, last_acked_tick, _, _, _) in client_data {
             let snapshot = self.generate_client_snapshot(
                 last_cmd_ack,
                 last_acked_tick,
@@ -286,23 +293,10 @@ impl GameServer {
                 max_delta_age,
             );
 
-            let header = PacketHeader::new(send_seq, 0, 0);
-            let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
-
-            if delay > 0 {
-                self.delayed_packets.push(DelayedPacket {
-                    send_time: Instant::now() + Duration::from_millis(delay as u64),
-                    packet,
-                    addr,
-                });
-            } else if let Err(e) = self.endpoint.send_to(&packet, addr) {
-                self.pending_events.push_back(ServerEvent::Error {
-                    message: format!("Failed to send snapshot to {}: {}", addr, e),
-                });
-            }
-
             if let Some(client) = self.connections.get_by_addr_mut(&addr) {
-                client.send_sequence = client.send_sequence.wrapping_add(1);
+                let packet = client
+                    .send_packet(PacketType::WorldSnapshot(snapshot), Reliability::Unreliable);
+                let _ = self.send_packet_simulated(packet, addr);
             }
         }
     }
@@ -331,14 +325,24 @@ impl GameServer {
         let packets = self.endpoint.receive()?;
 
         for (packet, addr) in packets {
-            self.handle_packet(packet, addr)?;
+            if let Some(client) = self.connections.get_by_addr_mut(&addr) {
+                let payloads = client.process_packet(packet);
+                for payload in payloads {
+                    self.handle_payload(payload, addr)?;
+                }
+            } else {
+                // No connection, check if it's a request
+                if let PacketType::ConnectionRequest { .. } = packet.payload {
+                    self.handle_payload(packet.payload, addr)?;
+                }
+            }
         }
 
         Ok(())
     }
 
-    fn handle_packet(&mut self, packet: Packet, addr: SocketAddr) -> io::Result<()> {
-        match packet.payload {
+    fn handle_payload(&mut self, payload: PacketType, addr: SocketAddr) -> io::Result<()> {
+        match payload {
             PacketType::ConnectionRequest { client_salt } => {
                 self.handle_connection_request(addr, client_salt)?;
             }
@@ -359,11 +363,6 @@ impl GameServer {
             }
             _ => {}
         }
-
-        if let Some(client) = self.connections.get_by_addr_mut(&addr) {
-            client.touch();
-        }
-
         Ok(())
     }
 
@@ -376,7 +375,7 @@ impl GameServer {
         let client = match self.connections.get_or_create_pending(addr, client_salt) {
             Ok(c) => c,
             Err(reason) => {
-                let header = PacketHeader::new(0, 0, 0);
+                let header = PacketHeader::new(0, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
                 let packet = Packet::new(
                     header,
                     PacketType::ConnectionDenied {
@@ -400,15 +399,13 @@ impl GameServer {
         let server_salt = client.server_salt;
         let challenge = client.combined_salt();
 
-        let header = PacketHeader::new(client.send_sequence, 0, 0);
-        client.send_sequence += 1;
-
-        let packet = Packet::new(
-            header,
+        // Use reliable for challenge to ensure it arrives
+        let packet = client.send_packet(
             PacketType::ConnectionChallenge {
                 server_salt,
                 challenge,
             },
+            Reliability::Reliable,
         );
 
         self.send_packet_simulated(packet, addr)?;
@@ -444,16 +441,15 @@ impl GameServer {
             entity_id,
         });
 
-        let header = PacketHeader::new(client.send_sequence, 0, 0);
-        client.send_sequence += 1;
-
-        let packet = Packet::new(
-            header,
+        // Use reliable for connection accepted
+        let packet = client.send_packet(
             PacketType::ConnectionAccepted {
                 client_id,
                 entity_id,
             },
+            Reliability::Reliable,
         );
+
         self.send_packet_simulated(packet, addr)?;
 
         Ok(())
@@ -481,21 +477,11 @@ impl GameServer {
     }
 
     fn handle_ping(&mut self, addr: SocketAddr, timestamp: u64) -> io::Result<()> {
-        let send_seq = self
-            .connections
-            .get_by_addr(&addr)
-            .map(|c| c.send_sequence)
-            .unwrap_or(0);
-
-        let header = PacketHeader::new(send_seq, 0, 0);
-        let packet = Packet::new(header, PacketType::Pong { timestamp });
-
-        self.send_packet_simulated(packet, addr)?;
-
         if let Some(client) = self.connections.get_by_addr_mut(&addr) {
-            client.send_sequence = client.send_sequence.wrapping_add(1);
+            let packet =
+                client.send_packet(PacketType::Pong { timestamp }, Reliability::Unreliable);
+            self.send_packet_simulated(packet, addr)?;
         }
-
         Ok(())
     }
 

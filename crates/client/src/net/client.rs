@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use dual::{ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType, WorldSnapshot};
+use dual::{
+    ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, Packet, PacketType,
+    Reliability, WorldSnapshot,
+};
 
 use super::config::ClientConfig;
 use super::input::InputState;
@@ -15,6 +18,7 @@ use super::prediction::ClientPrediction;
 
 pub struct NetworkClient {
     endpoint: NetworkEndpoint,
+    connection: ClientConnection,
     config: ClientConfig,
     state: ConnectionState,
     client_id: Option<u32>,
@@ -49,15 +53,20 @@ impl NetworkClient {
         };
 
         let tick_rate = config.server_tick_rate;
+        let client_salt = Self::generate_salt();
+
+        // Dummy connection initially
+        let connection = ClientConnection::new("127.0.0.1:80".parse().unwrap(), 0, client_salt);
 
         Ok(Self {
             endpoint,
+            connection,
             interpolation: InterpolationEngine::new(interpolation_config),
             prediction: ClientPrediction::new(tick_rate),
             state: ConnectionState::Disconnected,
             client_id: None,
             entity_id: None,
-            client_salt: Self::generate_salt(),
+            client_salt,
             server_salt: None,
             command_sequence: 0,
             last_command_time: Instant::now(),
@@ -95,6 +104,8 @@ impl NetworkClient {
         self.state = ConnectionState::Connecting;
         self.connection_start_time = Some(Instant::now());
 
+        self.connection = ClientConnection::new(server_addr, 0, self.client_salt);
+
         self.send_connection_request()?;
 
         Ok(())
@@ -102,7 +113,9 @@ impl NetworkClient {
 
     pub fn disconnect(&mut self) -> io::Result<()> {
         if self.state == ConnectionState::Connected {
-            let packet = self.endpoint.create_packet(PacketType::Disconnect);
+            let packet = self
+                .connection
+                .send_packet(PacketType::Disconnect, Reliability::Reliable);
             let _ = self.endpoint.send(&packet);
         }
 
@@ -125,15 +138,19 @@ impl NetworkClient {
     }
 
     fn send_connection_request(&mut self) -> io::Result<()> {
-        let packet = self.endpoint.create_packet(PacketType::ConnectionRequest {
-            client_salt: self.client_salt,
-        });
+        let packet = self.connection.send_packet(
+            PacketType::ConnectionRequest {
+                client_salt: self.client_salt,
+            },
+            Reliability::Unreliable,
+        );
         self.endpoint.send(&packet)?;
         Ok(())
     }
 
     pub fn update(&mut self, delta_time: f32, input: Option<&InputState>) -> io::Result<()> {
         self.process_network()?;
+        self.process_resends()?;
 
         match self.state {
             ConnectionState::Connecting | ConnectionState::ChallengeResponse => {
@@ -163,7 +180,10 @@ impl NetworkClient {
                     self.last_ping_time = Instant::now();
                 }
 
-                if self.endpoint.is_timed_out() {
+                if self
+                    .connection
+                    .is_timed_out(Duration::from_secs(self.config.connection_timeout_secs))
+                {
                     log::warn!("Server connection lost");
                     self.reset();
                 }
@@ -171,6 +191,14 @@ impl NetworkClient {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    fn process_resends(&mut self) -> io::Result<()> {
+        let packets = self.connection.collect_resends();
+        for packet in packets {
+            let _ = self.endpoint.send(&packet);
+        }
         Ok(())
     }
 
@@ -182,8 +210,8 @@ impl NetworkClient {
         self.prediction.store_command(&command, sequence);
 
         let packet = self
-            .endpoint
-            .create_packet(PacketType::ClientCommand(command));
+            .connection
+            .send_packet(PacketType::ClientCommand(command), Reliability::Unreliable);
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -195,7 +223,9 @@ impl NetworkClient {
             .unwrap()
             .as_millis() as u64;
 
-        let packet = self.endpoint.create_packet(PacketType::Ping { timestamp });
+        let packet = self
+            .connection
+            .send_packet(PacketType::Ping { timestamp }, Reliability::Unreliable);
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -205,14 +235,17 @@ impl NetworkClient {
         let packets = self.endpoint.receive()?;
 
         for (packet, _addr) in packets {
-            self.handle_packet(packet)?;
+            let payloads = self.connection.process_packet(packet);
+            for payload in payloads {
+                self.handle_payload(payload)?;
+            }
         }
 
         Ok(())
     }
 
-    fn handle_packet(&mut self, packet: Packet) -> io::Result<()> {
-        match packet.payload {
+    fn handle_payload(&mut self, payload: PacketType) -> io::Result<()> {
+        match payload {
             PacketType::ConnectionChallenge {
                 server_salt,
                 challenge,
@@ -249,6 +282,7 @@ impl NetworkClient {
 
         self.server_salt = Some(server_salt);
         self.state = ConnectionState::ChallengeResponse;
+        self.connection.state = ConnectionState::ChallengeResponse;
 
         let expected_challenge = self.client_salt ^ server_salt;
         if challenge != expected_challenge {
@@ -256,9 +290,12 @@ impl NetworkClient {
             return Ok(());
         }
 
-        let packet = self.endpoint.create_packet(PacketType::ChallengeResponse {
-            combined_salt: expected_challenge,
-        });
+        let packet = self.connection.send_packet(
+            PacketType::ChallengeResponse {
+                combined_salt: expected_challenge,
+            },
+            Reliability::Reliable,
+        );
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -274,6 +311,9 @@ impl NetworkClient {
         self.client_id = Some(client_id);
         self.entity_id = Some(entity_id);
         self.state = ConnectionState::Connected;
+        self.connection.state = ConnectionState::Connected;
+        self.connection.client_id = client_id;
+        self.connection.entity_id = Some(entity_id);
         self.endpoint.set_state(ConnectionState::Connected);
 
         Ok(())
@@ -323,9 +363,10 @@ impl NetworkClient {
     }
 
     fn send_snapshot_ack(&mut self, received_tick: u32) -> io::Result<()> {
-        let packet = self
-            .endpoint
-            .create_packet(PacketType::SnapshotAck { received_tick });
+        let packet = self.connection.send_packet(
+            PacketType::SnapshotAck { received_tick },
+            Reliability::Unreliable,
+        );
         self.endpoint.send(&packet)?;
         Ok(())
     }

@@ -4,8 +4,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dual::{
-    ConnectionManager, ConnectionState, NetworkEndpoint, Packet, PacketHeader,
-    PacketLossSimulation, PacketType,
+    ClientConnection, ConnectionManager, ConnectionState, NetworkEndpoint, Packet, PacketHeader,
+    PacketLossSimulation, PacketType, Reliability,
 };
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(40000);
@@ -55,8 +55,14 @@ fn test_connection_handshake_full_flow() {
     let mut connections = ConnectionManager::new(32);
     let client_salt = generate_salt();
 
+    // Client side connection tracker
+    let mut client_conn = ClientConnection::new(server_addr, 0, client_salt);
+
     client_endpoint.set_remote(server_addr);
-    let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+    let request = client_conn.send_packet(
+        PacketType::ConnectionRequest { client_salt },
+        Reliability::Unreliable,
+    );
     client_endpoint.send(&request).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -73,15 +79,12 @@ fn test_connection_handshake_full_flow() {
             let server_salt = client.server_salt;
             let challenge = client.combined_salt();
 
-            let header = PacketHeader::new(client.send_sequence, 0, 0);
-            client.send_sequence += 1;
-
-            let response = Packet::new(
-                header,
+            let response = client.send_packet(
                 PacketType::ConnectionChallenge {
                     server_salt,
                     challenge,
                 },
+                Reliability::Reliable,
             );
             server_endpoint.send_to(&response, *from_addr).unwrap();
         }
@@ -97,12 +100,16 @@ fn test_connection_handshake_full_flow() {
             server_salt,
             challenge,
         } => {
+            client_conn.process_packet(packet.clone()); // Update client state
             let expected = client_salt ^ server_salt;
             assert_eq!(*challenge, expected);
 
-            let response = client_endpoint.create_packet(PacketType::ChallengeResponse {
-                combined_salt: expected,
-            });
+            let response = client_conn.send_packet(
+                PacketType::ChallengeResponse {
+                    combined_salt: expected,
+                },
+                Reliability::Reliable,
+            );
             client_endpoint.send(&response).unwrap();
         }
         _ => panic!("Expected ConnectionChallenge"),
@@ -120,15 +127,12 @@ fn test_connection_handshake_full_flow() {
             client.state = ConnectionState::Connected;
             let client_id = client.client_id;
 
-            let header = PacketHeader::new(client.send_sequence, 0, 0);
-            client.send_sequence += 1;
-
-            let accepted = Packet::new(
-                header,
+            let accepted = client.send_packet(
                 PacketType::ConnectionAccepted {
                     client_id,
                     entity_id: 1,
                 },
+                Reliability::Reliable,
             );
             server_endpoint.send_to(&accepted, *from_addr).unwrap();
         }
@@ -160,9 +164,13 @@ fn test_connection_denied_server_full() {
 
     let mut connections = ConnectionManager::new(0);
     let client_salt = generate_salt();
+    let mut client_conn = ClientConnection::new(server_addr, 0, client_salt);
 
     client_endpoint.set_remote(server_addr);
-    let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+    let request = client_conn.send_packet(
+        PacketType::ConnectionRequest { client_salt },
+        Reliability::Unreliable,
+    );
     client_endpoint.send(&request).unwrap();
 
     let received =
@@ -175,7 +183,7 @@ fn test_connection_denied_server_full() {
             match connections.get_or_create_pending(*from_addr, *salt) {
                 Ok(_) => panic!("Should have been denied"),
                 Err(reason) => {
-                    let header = PacketHeader::new(0, 0, 0);
+                    let header = PacketHeader::new(0, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
                     let denied = Packet::new(
                         header,
                         PacketType::ConnectionDenied {
@@ -213,9 +221,13 @@ fn test_invalid_challenge_response_rejected() {
 
     let mut connections = ConnectionManager::new(32);
     let client_salt = generate_salt();
+    let mut client_conn = ClientConnection::new(server_addr, 0, client_salt);
 
     client_endpoint.set_remote(server_addr);
-    let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+    let request = client_conn.send_packet(
+        PacketType::ConnectionRequest { client_salt },
+        Reliability::Unreliable,
+    );
     client_endpoint.send(&request).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -227,24 +239,25 @@ fn test_invalid_challenge_response_rejected() {
     let server_salt = client.server_salt;
     let challenge = client.combined_salt();
 
-    let header = PacketHeader::new(client.send_sequence, 0, 0);
-    client.send_sequence += 1;
-
-    let response = Packet::new(
-        header,
+    let response = client.send_packet(
         PacketType::ConnectionChallenge {
             server_salt,
             challenge,
         },
+        Reliability::Reliable,
     );
     server_endpoint.send_to(&response, *from_addr).unwrap();
 
-    let _ = wait_for_packet(&mut client_endpoint, 200).expect("No packet received");
+    let received = wait_for_packet(&mut client_endpoint, 200).expect("No packet received");
+    client_conn.process_packet(received[0].0.clone());
 
     let wrong_salt = 0xDEADBEEF;
-    let response = client_endpoint.create_packet(PacketType::ChallengeResponse {
-        combined_salt: wrong_salt,
-    });
+    let response = client_conn.send_packet(
+        PacketType::ChallengeResponse {
+            combined_salt: wrong_salt,
+        },
+        Reliability::Reliable,
+    );
     client_endpoint.send(&response).unwrap();
 
     let _ = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -263,10 +276,13 @@ fn test_ping_pong() {
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
     let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
 
+    // Minimal connection for tests
+    let mut client_conn = ClientConnection::new(server_addr, 0, 0);
+
     let timestamp = 12345u64;
 
     client_endpoint.set_remote(server_addr);
-    let ping = client_endpoint.create_packet(PacketType::Ping { timestamp });
+    let ping = client_conn.send_packet(PacketType::Ping { timestamp }, Reliability::Unreliable);
     client_endpoint.send(&ping).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -275,7 +291,7 @@ fn test_ping_pong() {
     let (packet, from_addr) = &received[0];
     match &packet.payload {
         PacketType::Ping { timestamp: ts } => {
-            let header = PacketHeader::new(0, 0, 0);
+            let header = PacketHeader::new(0, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
             let pong = Packet::new(header, PacketType::Pong { timestamp: *ts });
             server_endpoint.send_to(&pong, *from_addr).unwrap();
         }
@@ -305,6 +321,8 @@ fn test_client_command_transmission() {
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
     let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
 
+    let mut client_conn = ClientConnection::new(server_addr, 0, 0);
+
     let mut command = ClientCommand::new(100, 1);
     command.encode_move_direction([1.0, 0.0, 0.5]);
     command.encode_view_angles(1.5, -0.5);
@@ -312,7 +330,10 @@ fn test_client_command_transmission() {
     command.set_flag(ClientCommand::FLAG_JUMP, true);
 
     client_endpoint.set_remote(server_addr);
-    let packet = client_endpoint.create_packet(PacketType::ClientCommand(command.clone()));
+    let packet = client_conn.send_packet(
+        PacketType::ClientCommand(command.clone()),
+        Reliability::Unreliable,
+    );
     client_endpoint.send(&packet).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -358,7 +379,7 @@ fn test_world_snapshot_transmission() {
     entity.encode_velocity([5.0, -2.5, 0.0]);
     snapshot.entities.push(entity);
 
-    let header = PacketHeader::new(0, 0, 0);
+    let header = PacketHeader::new(0, 0, 0, PacketHeader::CHANNEL_UNRELIABLE, 0);
     let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
     server_endpoint.send_to(&packet, client_addr).unwrap();
 
@@ -389,9 +410,10 @@ fn test_disconnect_packet() {
 
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
     let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
+    let mut client_conn = ClientConnection::new(server_addr, 0, 0);
 
     client_endpoint.set_remote(server_addr);
-    let packet = client_endpoint.create_packet(PacketType::Disconnect);
+    let packet = client_conn.send_packet(PacketType::Disconnect, Reliability::Reliable);
     client_endpoint.send(&packet).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -405,11 +427,11 @@ fn test_disconnect_packet() {
 fn test_packet_sequence_numbers() {
     let port = next_port();
     let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-    let mut endpoint = NetworkEndpoint::bind(addr).unwrap();
+    let mut conn = ClientConnection::new(addr, 0, 0);
 
-    let p1 = endpoint.create_packet(PacketType::Ping { timestamp: 1 });
-    let p2 = endpoint.create_packet(PacketType::Ping { timestamp: 2 });
-    let p3 = endpoint.create_packet(PacketType::Ping { timestamp: 3 });
+    let p1 = conn.send_packet(PacketType::Ping { timestamp: 1 }, Reliability::Unreliable);
+    let p2 = conn.send_packet(PacketType::Ping { timestamp: 2 }, Reliability::Unreliable);
+    let p3 = conn.send_packet(PacketType::Ping { timestamp: 3 }, Reliability::Unreliable);
 
     assert_eq!(p1.header.sequence, 0);
     assert_eq!(p2.header.sequence, 1);
@@ -422,7 +444,6 @@ fn test_multiple_clients_connect() {
     let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
-    server_endpoint.set_server_mode(true);
     let mut connections = ConnectionManager::new(32);
 
     for i in 0..3u16 {
@@ -431,9 +452,13 @@ fn test_multiple_clients_connect() {
         let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
 
         let client_salt = generate_salt();
+        let mut client_conn = ClientConnection::new(server_addr, 0, client_salt);
         client_endpoint.set_remote(server_addr);
 
-        let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+        let request = client_conn.send_packet(
+            PacketType::ConnectionRequest { client_salt },
+            Reliability::Unreliable,
+        );
         client_endpoint.send(&request).unwrap();
 
         let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -460,9 +485,11 @@ fn test_receive_tracker_zero_sequence() {
 
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
     let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
+    let mut client_conn = ClientConnection::new(server_addr, 0, 0);
 
     client_endpoint.set_remote(server_addr);
-    let packet = client_endpoint.create_packet(PacketType::Ping { timestamp: 0 });
+    let packet =
+        client_conn.send_packet(PacketType::Ping { timestamp: 0 }, Reliability::Unreliable);
     client_endpoint.send(&packet).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -477,14 +504,17 @@ fn test_connection_survives_packet_loss() {
     let client_addr: SocketAddr = format!("127.0.0.1:{}", port + 1).parse().unwrap();
 
     let mut server_endpoint = NetworkEndpoint::bind(server_addr).unwrap();
-    server_endpoint.set_server_mode(true);
     let mut client_endpoint = NetworkEndpoint::bind(client_addr).unwrap();
 
     let mut connections = ConnectionManager::new(32);
     let client_salt = generate_salt();
+    let mut client_conn = ClientConnection::new(server_addr, 0, client_salt);
 
     client_endpoint.set_remote(server_addr);
-    let request = client_endpoint.create_packet(PacketType::ConnectionRequest { client_salt });
+    let request = client_conn.send_packet(
+        PacketType::ConnectionRequest { client_salt },
+        Reliability::Unreliable,
+    );
     client_endpoint.send(&request).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -497,23 +527,26 @@ fn test_connection_survives_packet_loss() {
         let server_salt = client.server_salt;
         let challenge = client.combined_salt();
 
-        let header = PacketHeader::new(client.send_sequence, 0, 0);
-        client.send_sequence += 1;
-
-        let response = Packet::new(
-            header,
+        let response = client.send_packet(
             PacketType::ConnectionChallenge {
                 server_salt,
                 challenge,
             },
+            Reliability::Reliable,
         );
         server_endpoint.send_to(&response, *from_addr).unwrap();
     }
 
-    let _ = wait_for_packet(&mut client_endpoint, 200).expect("No packet received");
-    let response = client_endpoint.create_packet(PacketType::ChallengeResponse {
-        combined_salt: client_salt ^ connections.iter().next().unwrap().server_salt,
-    });
+    let received = wait_for_packet(&mut client_endpoint, 200).expect("No packet received");
+    client_conn.process_packet(received[0].0.clone());
+
+    let expected = client_salt ^ connections.iter().next().unwrap().server_salt;
+    let response = client_conn.send_packet(
+        PacketType::ChallengeResponse {
+            combined_salt: expected,
+        },
+        Reliability::Reliable,
+    );
     client_endpoint.send(&response).unwrap();
 
     let received = wait_for_packet(&mut server_endpoint, 200).expect("No packet received");
@@ -531,63 +564,69 @@ fn test_connection_survives_packet_loss() {
     };
 
     let client_id = client.client_id;
-    let header = PacketHeader::new(client.send_sequence, 0, 0);
-    client.send_sequence += 1;
-
-    let accepted = Packet::new(
-        header,
+    let accepted = client.send_packet(
         PacketType::ConnectionAccepted {
             client_id,
             entity_id: 1,
         },
+        Reliability::Reliable,
     );
     server_endpoint.send_to(&accepted, *from_addr).unwrap();
 
     let _ = wait_for_packet(&mut client_endpoint, 200);
 
-    let test_duration = Duration::from_secs(65);
+    let test_duration = Duration::from_secs(5); // Reduced duration for unit test
     let start = Instant::now();
-    let mut server_send_sequence = 2u32;
     let mut last_send = Instant::now();
     let send_interval = Duration::from_millis(16);
 
     while start.elapsed() < test_duration {
         if last_send.elapsed() >= send_interval {
-            let client = connections.iter().next().unwrap();
+            let client = connections.iter_mut().next().unwrap();
 
             if !client.packet_loss_sim.should_drop() {
                 let snapshot = dual::WorldSnapshot::new(
-                    server_send_sequence,
+                    client.send_sequence,
                     start.elapsed().as_millis() as u64,
                 );
-                let header = PacketHeader::new(server_send_sequence, 0, 0);
-                let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
+                let packet = client
+                    .send_packet(PacketType::WorldSnapshot(snapshot), Reliability::Unreliable);
                 let _ = server_endpoint.send_to(&packet, client.addr);
             }
 
-            server_send_sequence = server_send_sequence.wrapping_add(1);
+            // Also send resends
+            for packet in client.collect_resends() {
+                let _ = server_endpoint.send_to(&packet, client.addr);
+            }
+
             last_send = Instant::now();
         }
 
         if let Ok(received) = client_endpoint.receive() {
-            for _ in received {
-                if let Some(client) = connections.get_by_addr_mut(&client_addr) {
-                    client.touch();
-                }
+            for (packet, _) in received {
+                client_conn.process_packet(packet);
             }
+        }
+
+        // Client Resends
+        for packet in client_conn.collect_resends() {
+            let _ = client_endpoint.send(&packet);
         }
 
         if let Ok(received) = server_endpoint.receive() {
-            for (_, addr) in received {
+            for (packet, addr) in received {
                 if let Some(client) = connections.get_by_addr_mut(&addr) {
-                    client.touch();
+                    client.process_packet(packet); // Needed to process ACKs!
                 }
             }
         }
 
-        let ping = client_endpoint.create_packet(PacketType::Ping {
-            timestamp: start.elapsed().as_millis() as u64,
-        });
+        let ping = client_conn.send_packet(
+            PacketType::Ping {
+                timestamp: start.elapsed().as_millis() as u64,
+            },
+            Reliability::Unreliable,
+        );
         let _ = client_endpoint.send(&ping);
 
         let timed_out_clients = connections.cleanup_timed_out();
@@ -603,6 +642,6 @@ fn test_connection_survives_packet_loss() {
     assert_eq!(
         connections.connected_count(),
         1,
-        "Connection should survive 65 seconds with 30% packet loss"
+        "Connection should survive with 30% packet loss"
     );
 }

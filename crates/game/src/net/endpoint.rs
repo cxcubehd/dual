@@ -5,9 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::connection::ConnectionState;
-use super::protocol::{MAX_PACKET_SIZE, Packet, PacketHeader, PacketType};
+use super::protocol::{MAX_PACKET_SIZE, Packet};
 use super::stats::NetworkStats;
-use super::tracking::{AckTracker, ReceiveTracker};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -16,15 +15,11 @@ pub struct NetworkEndpoint {
     local_addr: SocketAddr,
     remote_addr: Option<SocketAddr>,
     state: ConnectionState,
-    send_sequence: u32,
-    ack_tracker: AckTracker,
-    receive_tracker: ReceiveTracker,
     stats: NetworkStats,
     recv_buffer: [u8; MAX_PACKET_SIZE],
     timeout: Duration,
     last_receive_time: Instant,
     running: Arc<AtomicBool>,
-    server_mode: bool,
 }
 
 impl NetworkEndpoint {
@@ -39,20 +34,12 @@ impl NetworkEndpoint {
             local_addr,
             remote_addr: None,
             state: ConnectionState::Disconnected,
-            send_sequence: 0,
-            ack_tracker: AckTracker::new(256),
-            receive_tracker: ReceiveTracker::new(),
             stats: NetworkStats::default(),
             recv_buffer: [0u8; MAX_PACKET_SIZE],
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             last_receive_time: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
-            server_mode: false,
         })
-    }
-
-    pub fn set_server_mode(&mut self, server_mode: bool) {
-        self.server_mode = server_mode;
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -96,8 +83,6 @@ impl NetworkEndpoint {
 
         let bytes = self.socket.send_to(&data, addr)?;
 
-        self.ack_tracker.track_packet(packet.header.sequence);
-
         self.stats.packets_sent += 1;
         self.stats.bytes_sent += bytes as u64;
 
@@ -109,16 +94,6 @@ impl NetworkEndpoint {
             .remote_addr
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No remote address set"))?;
         self.send_to(packet, addr)
-    }
-
-    pub fn create_packet(&mut self, payload: PacketType) -> Packet {
-        let sequence = self.send_sequence;
-        self.send_sequence = self.send_sequence.wrapping_add(1);
-
-        let (ack, ack_bitfield) = self.receive_tracker.ack_data();
-        let header = PacketHeader::new(sequence, ack, ack_bitfield);
-
-        Packet::new(header, payload)
     }
 
     pub fn receive(&mut self) -> io::Result<Vec<(Packet, SocketAddr)>> {
@@ -137,26 +112,8 @@ impl NetworkEndpoint {
                                 continue;
                             }
 
-                            if !self.server_mode
-                                && !self.receive_tracker.record_received(packet.header.sequence)
-                            {
-                                continue;
-                            }
-
-                            let _acked = self
-                                .ack_tracker
-                                .process_ack(packet.header.ack, packet.header.ack_bitfield);
-
                             self.stats.packets_received += 1;
                             self.stats.bytes_received += size as u64;
-                            self.stats.rtt_ms = self.ack_tracker.srtt();
-                            self.stats.rtt_variance = self.ack_tracker.rtt_var();
-
-                            if self.stats.packets_sent > 0 {
-                                let unacked = self.ack_tracker.unacked_count() as f32;
-                                let sent = self.stats.packets_sent as f32;
-                                self.stats.packet_loss_percent = (unacked / sent.max(1.0)) * 100.0;
-                            }
 
                             self.last_receive_time = Instant::now();
                             packets.push((packet, addr));
@@ -182,9 +139,6 @@ impl NetworkEndpoint {
 
     pub fn reset(&mut self) {
         self.state = ConnectionState::Disconnected;
-        self.send_sequence = 0;
-        self.ack_tracker = AckTracker::new(256);
-        self.receive_tracker = ReceiveTracker::new();
         self.stats = NetworkStats::default();
         self.last_receive_time = Instant::now();
     }

@@ -5,7 +5,7 @@ mod snapshot;
 mod stats;
 mod tracking;
 
-pub use connection::{ClientConnection, ConnectionManager, ConnectionState};
+pub use connection::{ClientConnection, ConnectionManager, ConnectionState, Reliability};
 pub use endpoint::NetworkEndpoint;
 pub use protocol::{ArchivedPacket, sequence_greater_than};
 pub use protocol::{
