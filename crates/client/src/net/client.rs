@@ -168,10 +168,15 @@ impl NetworkClient {
                     if let Some(input) = input {
                         let command =
                             input.to_command(self.estimated_server_tick, self.command_sequence);
+                        
+                        self.prediction.prepare_tick();
                         self.prediction.apply_input(&command, step);
                         self.send_command(input)?;
                     }
                 }
+
+                let alpha = self.input_accumulator / step;
+                self.prediction.update_visuals(alpha);
 
                 if self.last_ping_time.elapsed() >= self.ping_interval {
                     self.send_ping()?;
