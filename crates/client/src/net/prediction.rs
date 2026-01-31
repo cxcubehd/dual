@@ -5,67 +5,75 @@ use glam::{Quat, Vec3};
 use dual::ClientCommand;
 
 const MAX_PENDING_COMMANDS: usize = 128;
+const ERROR_CORRECTION_SPEED: f32 = 20.0;
+const ERROR_THRESHOLD: f32 = 0.0001;
+const SNAP_THRESHOLD: f32 = 3.0;
 
 #[derive(Debug, Clone)]
 struct PendingCommand {
     sequence: u32,
-    command: ClientCommand,
-}
-
-#[derive(Debug, Clone)]
-pub struct PredictedState {
-    pub position: Vec3,
-    pub velocity: Vec3,
-    pub orientation: Quat,
-}
-
-impl Default for PredictedState {
-    fn default() -> Self {
-        Self {
-            position: Vec3::new(0.0, 1.0, 0.0),
-            velocity: Vec3::ZERO,
-            orientation: Quat::IDENTITY,
-        }
-    }
+    position_after: Vec3,
 }
 
 pub struct ClientPrediction {
     pending_commands: VecDeque<PendingCommand>,
-    base_state: PredictedState,
-    frame_position: Vec3,
-    frame_orientation: Quat,
+    position: Vec3,
+    orientation: Quat,
+    position_error: Vec3,
     last_acked_sequence: u32,
-    tick_rate: f32,
 }
 
 impl ClientPrediction {
-    pub fn new(tick_rate: u32) -> Self {
+    pub fn new(_tick_rate: u32) -> Self {
         Self {
             pending_commands: VecDeque::with_capacity(MAX_PENDING_COMMANDS),
-            base_state: PredictedState::default(),
-            frame_position: Vec3::new(0.0, 1.0, 0.0),
-            frame_orientation: Quat::IDENTITY,
+            position: Vec3::new(0.0, 1.0, 0.0),
+            orientation: Quat::IDENTITY,
+            position_error: Vec3::ZERO,
             last_acked_sequence: 0,
-            tick_rate: tick_rate as f32,
         }
     }
 
     pub fn apply_input(&mut self, command: &ClientCommand, dt: f32) {
-        apply_movement_dt(
-            &mut self.frame_position,
-            &mut self.frame_orientation,
-            command,
-            dt,
-        );
+        let move_dir = command.decode_move_direction();
+        let (yaw, pitch) = command.decode_view_angles();
+
+        let speed = if command.has_flag(ClientCommand::FLAG_SPRINT) {
+            10.0
+        } else {
+            5.0
+        };
+
+        let move_vec = Vec3::new(move_dir[0], move_dir[1], move_dir[2]);
+        if move_vec.length_squared() > 0.001 {
+            let normalized = move_vec.normalize();
+
+            let (sin_yaw, cos_yaw) = yaw.sin_cos();
+            let world_move = Vec3::new(
+                normalized.x * cos_yaw + normalized.z * sin_yaw,
+                normalized.y,
+                -normalized.x * sin_yaw + normalized.z * cos_yaw,
+            );
+
+            self.position += world_move * speed * dt;
+        }
+
+        self.orientation = Quat::from_euler(glam::EulerRot::YXZ, yaw, -pitch, 0.0);
+
+        if self.position_error.length_squared() > ERROR_THRESHOLD * ERROR_THRESHOLD {
+            let correction_factor = (ERROR_CORRECTION_SPEED * dt).min(1.0);
+            let correction = self.position_error * correction_factor;
+            self.position += correction;
+            self.position_error -= correction;
+        } else {
+            self.position_error = Vec3::ZERO;
+        }
     }
 
-    pub fn store_command(&mut self, command: &ClientCommand, sequence: u32) {
-        self.base_state.position = self.frame_position;
-        self.base_state.orientation = self.frame_orientation;
-
+    pub fn store_command(&mut self, _command: &ClientCommand, sequence: u32) {
         self.pending_commands.push_back(PendingCommand {
             sequence,
-            command: command.clone(),
+            position_after: self.position,
         });
 
         while self.pending_commands.len() > MAX_PENDING_COMMANDS {
@@ -87,79 +95,69 @@ impl ClientPrediction {
         while self
             .pending_commands
             .front()
-            .is_some_and(|cmd| cmd.sequence <= acked_sequence)
+            .is_some_and(|cmd| cmd.sequence < acked_sequence)
         {
             self.pending_commands.pop_front();
         }
 
-        let mut replay_position = server_position;
-        let mut replay_orientation = server_orientation;
-        let dt = 1.0 / self.tick_rate;
+        let acked_position = if let Some(acked_cmd) = self
+            .pending_commands
+            .front()
+            .filter(|cmd| cmd.sequence == acked_sequence)
+        {
+            acked_cmd.position_after
+        } else {
+            return;
+        };
 
-        for pending in &self.pending_commands {
-            apply_movement_dt(
-                &mut replay_position,
-                &mut replay_orientation,
-                &pending.command,
-                dt,
-            );
+        if self
+            .pending_commands
+            .front()
+            .is_some_and(|cmd| cmd.sequence == acked_sequence)
+        {
+            self.pending_commands.pop_front();
         }
 
-        self.base_state.position = replay_position;
-        self.base_state.orientation = replay_orientation;
-        self.frame_position = replay_position;
-        self.frame_orientation = replay_orientation;
+        let server_error = server_position - acked_position;
+        let error_magnitude = server_error.length();
+
+        if error_magnitude < ERROR_THRESHOLD {
+            return;
+        }
+
+        if error_magnitude > SNAP_THRESHOLD {
+            self.position += server_error;
+            self.position_error = Vec3::ZERO;
+            for cmd in &mut self.pending_commands {
+                cmd.position_after += server_error;
+            }
+        } else {
+            self.position_error = server_error;
+            for cmd in &mut self.pending_commands {
+                cmd.position_after += server_error;
+            }
+        }
+
+        let _ = server_orientation;
     }
 
     pub fn predicted_position(&self) -> Vec3 {
-        self.frame_position
+        self.position
     }
 
     pub fn predicted_orientation(&self) -> Quat {
-        self.frame_orientation
+        self.orientation
     }
 
     pub fn reset(&mut self) {
         self.pending_commands.clear();
-        self.base_state = PredictedState::default();
-        self.frame_position = Vec3::new(0.0, 1.0, 0.0);
-        self.frame_orientation = Quat::IDENTITY;
+        self.position = Vec3::new(0.0, 1.0, 0.0);
+        self.orientation = Quat::IDENTITY;
+        self.position_error = Vec3::ZERO;
         self.last_acked_sequence = 0;
     }
 
     pub fn pending_command_count(&self) -> usize {
         self.pending_commands.len()
     }
-}
-
-fn apply_movement_dt(
-    position: &mut Vec3,
-    orientation: &mut Quat,
-    command: &ClientCommand,
-    dt: f32,
-) {
-    let move_dir = command.decode_move_direction();
-    let (yaw, pitch) = command.decode_view_angles();
-
-    let speed = if command.has_flag(ClientCommand::FLAG_SPRINT) {
-        10.0
-    } else {
-        5.0
-    };
-
-    let move_vec = Vec3::new(move_dir[0], move_dir[1], move_dir[2]);
-    if move_vec.length_squared() > 0.001 {
-        let normalized = move_vec.normalize();
-
-        let (sin_yaw, cos_yaw) = yaw.sin_cos();
-        let world_move = Vec3::new(
-            normalized.x * cos_yaw + normalized.z * sin_yaw,
-            normalized.y,
-            -normalized.x * sin_yaw + normalized.z * cos_yaw,
-        );
-
-        *position += world_move * speed * dt;
-    }
-
-    *orientation = Quat::from_euler(glam::EulerRot::YXZ, yaw, -pitch, 0.0);
 }
