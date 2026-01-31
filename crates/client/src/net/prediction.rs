@@ -132,7 +132,6 @@ impl ClientPrediction {
                 cmd.position_after += server_error;
             }
         } else {
-            self.position_error = server_error;
             for cmd in &mut self.pending_commands {
                 cmd.position_after += server_error;
             }
