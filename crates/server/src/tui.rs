@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Table, Row, Cell};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs};
 
 use crate::server::ServerStats;
 
@@ -253,7 +253,8 @@ impl TuiState {
 
     pub fn close_packet_loss_panel(&mut self) {
         if let Some(panel) = self.packet_loss_panel.take() {
-            self.pending_packet_loss_update = Some((panel.client_id, panel.sim, panel.incoming_sim));
+            self.pending_packet_loss_update =
+                Some((panel.client_id, panel.sim, panel.incoming_sim));
         }
     }
 
