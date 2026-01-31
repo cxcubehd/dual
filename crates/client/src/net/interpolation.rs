@@ -13,6 +13,7 @@ pub struct InterpolationConfig {
     pub max_buffer_snapshots: usize,
     pub time_correction_rate: f64,
     pub extrapolation_limit_ms: f64,
+    pub snapshot_retention_ms: f64,
 }
 
 impl Default for InterpolationConfig {
@@ -23,6 +24,7 @@ impl Default for InterpolationConfig {
             max_buffer_snapshots: 256,
             time_correction_rate: 0.1,
             extrapolation_limit_ms: 250.0,
+            snapshot_retention_ms: 3000.0,
         }
     }
 }
@@ -323,7 +325,7 @@ impl InterpolationEngine {
     }
 
     fn cleanup_old_snapshots(&mut self) {
-        let cutoff = self.render_time_ms - 500.0;
+        let cutoff = self.render_time_ms - self.config.snapshot_retention_ms;
         self.snapshots.retain(|s| s.server_time_ms > cutoff);
     }
 
@@ -505,6 +507,51 @@ mod tests {
         let mid = hermite_interpolate(p0, p1, p2, p3, 0.5);
 
         assert!((mid.x - 0.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_baseline_loss_deadlock() {
+        let mut config = InterpolationConfig::default();
+        config.max_buffer_snapshots = 5; // Small buffer to force eviction
+        let mut engine = InterpolationEngine::new(config);
+
+        // 1. Receive Snapshot 10 (Full)
+        let s10 = create_test_snapshot(10, 1000, 1);
+        engine.push_snapshot(s10.clone());
+        assert!(engine.get_snapshot_by_tick(10).is_some());
+
+        // 2. Receive Snapshot 20 (Delta from 10)
+        let mut s20 = create_test_snapshot(20, 2000, 1);
+        s20.is_delta = true;
+        s20.baseline_tick = 10;
+        engine.push_snapshot(s20.clone());
+        assert!(engine.get_snapshot_by_tick(20).is_some());
+
+        // 3. Receive enough snapshots to evict 10
+        for i in 1..=10 {
+            let tick = 20 + i;
+            let time = 2000 + i as u64 * 100;
+            let mut s = create_test_snapshot(tick, time, 1);
+            s.is_delta = true;
+            s.baseline_tick = 20 + i - 1;
+            engine.push_snapshot(s);
+        }
+
+        // Snapshot 10 should be gone now (buffer size 5)
+        assert!(engine.get_snapshot_by_tick(10).is_none());
+
+        // 4. Server thinks we are still at 10 (ACKs lost), sends Delta from 10
+        // (This happens if we haven't successfully ACKed anything since 10, or server lost them)
+        let mut s_late = create_test_snapshot(50, 5000, 1);
+        s_late.is_delta = true;
+        s_late.baseline_tick = 10;
+
+        // This should FAIL to expand because 10 is gone
+        // push_snapshot doesn't return result, so we check if it was added
+        engine.push_snapshot(s_late);
+
+        // It should NOT be in the buffer
+        assert!(engine.get_snapshot_by_tick(50).is_none());
     }
 }
 
