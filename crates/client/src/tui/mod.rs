@@ -179,6 +179,7 @@ impl Tui {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_connected_key(&mut self, code: KeyCode) -> Action {
         match code {
             KeyCode::Enter => Action::LaunchGame,
@@ -187,6 +188,7 @@ impl Tui {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_in_game_key(&mut self, code: KeyCode) -> Action {
         match code {
             KeyCode::Esc => Action::ChangeScreen(Screen::Connected),
@@ -223,7 +225,7 @@ impl Tui {
 
         if let Some(client) = &self.client {
             if client.is_connected() && self.screen == Screen::Connecting {
-                self.screen = Screen::Connected;
+                self.should_launch = true;
             }
         }
 

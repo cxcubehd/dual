@@ -20,7 +20,7 @@ impl Default for JitterBufferConfig {
             min_buffer_size: 2,
             max_buffer_size: 32,
             interpolation_delay: DEFAULT_INTERPOLATION_DELAY_TICKS,
-            tick_duration_secs: 1.0 / 20.0,
+            tick_duration_secs: 1.0 / 60.0,
         }
     }
 }

@@ -11,7 +11,9 @@ pub enum Screen {
     MainMenu,
     Connect,
     Connecting,
+    #[allow(dead_code)]
     Connected,
+    #[allow(dead_code)]
     InGame,
 }
 
@@ -109,7 +111,7 @@ fn render_main_menu(frame: &mut Frame, area: Rect, selected: usize) {
 }
 
 fn render_connect(frame: &mut Frame, area: Rect, input: &str, error: Option<&str>) {
-    let chunks = Layout::default()
+    let _chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
@@ -199,6 +201,7 @@ fn render_connecting(frame: &mut Frame, area: Rect, client: &Option<NetworkClien
     frame.render_widget(help, inner[1]);
 }
 
+#[allow(dead_code)]
 fn render_connected(frame: &mut Frame, area: Rect, client: &Option<NetworkClient>) {
     let dialog_area = centered_rect(50, 12, area);
     frame.render_widget(Clear, dialog_area);

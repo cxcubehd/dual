@@ -55,6 +55,7 @@ pub enum PacketType {
     },
     ConnectionAccepted {
         client_id: u32,
+        entity_id: u32,
     },
     ConnectionDenied {
         reason: String,

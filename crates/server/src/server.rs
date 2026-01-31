@@ -17,7 +17,6 @@ pub struct ServerConfig {
     pub tick_rate: u32,
     pub max_clients: usize,
     pub snapshot_buffer_size: usize,
-    pub connection_timeout_secs: u64,
     pub snapshot_send_rate: u32,
 }
 
@@ -27,7 +26,6 @@ impl Default for ServerConfig {
             tick_rate: 60,
             max_clients: 32,
             snapshot_buffer_size: 64,
-            connection_timeout_secs: 10,
             snapshot_send_rate: 1,
         }
     }
@@ -51,7 +49,49 @@ pub struct GameServer {
     last_tick_time: Instant,
     accumulator: Duration,
     running: Arc<AtomicBool>,
+    #[allow(dead_code)]
     start_time: Instant,
+    pending_events: VecDeque<ServerEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ServerEvent {
+    ClientConnecting {
+        addr: SocketAddr,
+    },
+    ClientConnected {
+        client_id: u32,
+        addr: SocketAddr,
+        entity_id: u32,
+    },
+    ClientDisconnected {
+        client_id: u32,
+        reason: DisconnectReason,
+    },
+    ConnectionDenied {
+        addr: SocketAddr,
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DisconnectReason {
+    Graceful,
+    Timeout,
+    Kicked,
+}
+
+impl DisconnectReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DisconnectReason::Graceful => "disconnected",
+            DisconnectReason::Timeout => "timed out",
+            DisconnectReason::Kicked => "kicked",
+        }
+    }
 }
 
 impl GameServer {
@@ -60,11 +100,10 @@ impl GameServer {
         endpoint.set_server_mode(true);
         let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
 
-        log::info!(
-            "Server started on {} with tick rate {}",
-            endpoint.local_addr(),
-            config.tick_rate
-        );
+        let mut pending_events = VecDeque::new();
+        pending_events.push_back(ServerEvent::ClientConnecting {
+            addr: endpoint.local_addr(),
+        });
 
         Ok(Self {
             endpoint,
@@ -78,16 +117,21 @@ impl GameServer {
             accumulator: Duration::ZERO,
             running: Arc::new(AtomicBool::new(true)),
             start_time: Instant::now(),
+            pending_events: VecDeque::new(),
             config,
         })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.endpoint.local_addr()
     }
 
     pub fn running(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.running)
     }
 
-    pub fn shutdown(&self) {
-        self.running.store(false, Ordering::SeqCst);
+    pub fn drain_events(&mut self) -> impl Iterator<Item = ServerEvent> + '_ {
+        self.pending_events.drain(..)
     }
 
     pub fn run(&mut self) {
@@ -95,7 +139,34 @@ impl GameServer {
             self.tick_once();
             std::thread::sleep(Duration::from_millis(1));
         }
-        log::info!("Server shutting down");
+        self.shutdown_connections();
+    }
+
+    pub fn shutdown_connections(&mut self) {
+        let client_ids: Vec<u32> = self.connections.iter().map(|c| c.client_id).collect();
+        for client_id in client_ids {
+            self.kick_client(client_id);
+        }
+    }
+
+    pub fn kick_client(&mut self, client_id: u32) {
+        if let Some(client) = self.connections.get(client_id) {
+            let addr = client.addr;
+            let header = PacketHeader::new(0, 0, 0);
+            let packet = Packet::new(header, PacketType::Disconnect);
+            let _ = self.endpoint.send_to(&packet, addr);
+        }
+
+        if let Some(client) = self.connections.remove(client_id) {
+            if let Some(entity_id) = client.entity_id {
+                self.world.despawn_entity(entity_id);
+            }
+            self.pending_events
+                .push_back(ServerEvent::ClientDisconnected {
+                    client_id,
+                    reason: DisconnectReason::Kicked,
+                });
+        }
     }
 
     pub fn tick_once(&mut self) {
@@ -105,7 +176,9 @@ impl GameServer {
         self.accumulator += delta;
 
         if let Err(e) = self.process_network() {
-            log::error!("Network error: {}", e);
+            self.pending_events.push_back(ServerEvent::Error {
+                message: format!("Network error: {}", e),
+            });
         }
 
         while self.accumulator >= self.tick_duration {
@@ -130,7 +203,11 @@ impl GameServer {
 
         let timed_out = self.connections.cleanup_timed_out();
         for client_id in timed_out {
-            log::info!("Client {} timed out", client_id);
+            self.pending_events
+                .push_back(ServerEvent::ClientDisconnected {
+                    client_id,
+                    reason: DisconnectReason::Timeout,
+                });
         }
     }
 
@@ -221,7 +298,9 @@ impl GameServer {
             let packet = Packet::new(header, PacketType::WorldSnapshot(snapshot));
 
             if let Err(e) = self.endpoint.send_to(&packet, addr) {
-                log::warn!("Failed to send snapshot to {}: {}", addr, e);
+                self.pending_events.push_back(ServerEvent::Error {
+                    message: format!("Failed to send snapshot to {}: {}", addr, e),
+                });
             }
 
             if let Some(client) = self.connections.get_by_addr_mut(&addr) {
@@ -257,9 +336,7 @@ impl GameServer {
             PacketType::Disconnect => {
                 self.handle_disconnect(addr)?;
             }
-            _ => {
-                log::debug!("Unexpected packet type from {}", addr);
-            }
+            _ => {}
         }
 
         if let Some(client) = self.connections.get_by_addr_mut(&addr) {
@@ -270,7 +347,8 @@ impl GameServer {
     }
 
     fn handle_connection_request(&mut self, addr: SocketAddr, client_salt: u64) -> io::Result<()> {
-        log::info!("Connection request from {}", addr);
+        self.pending_events
+            .push_back(ServerEvent::ClientConnecting { addr });
 
         let client = match self.connections.get_or_create_pending(addr, client_salt) {
             Ok(c) => c,
@@ -283,6 +361,11 @@ impl GameServer {
                     },
                 );
                 self.endpoint.send_to(&packet, addr)?;
+                self.pending_events
+                    .push_back(ServerEvent::ConnectionDenied {
+                        addr,
+                        reason: reason.to_string(),
+                    });
                 return Ok(());
             }
         };
@@ -316,7 +399,9 @@ impl GameServer {
         };
 
         if combined_salt != client.combined_salt() {
-            log::warn!("Invalid challenge response from {}", addr);
+            self.pending_events.push_back(ServerEvent::Error {
+                message: format!("Invalid challenge response from {}", addr),
+            });
             return Ok(());
         }
 
@@ -326,17 +411,22 @@ impl GameServer {
         let entity_id = self.world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
         client.entity_id = Some(entity_id);
 
-        log::info!(
-            "Client {} connected from {}, entity {}",
+        self.pending_events.push_back(ServerEvent::ClientConnected {
             client_id,
             addr,
-            entity_id
-        );
+            entity_id,
+        });
 
         let header = PacketHeader::new(client.send_sequence, 0, 0);
         client.send_sequence += 1;
 
-        let packet = Packet::new(header, PacketType::ConnectionAccepted { client_id });
+        let packet = Packet::new(
+            header,
+            PacketType::ConnectionAccepted {
+                client_id,
+                entity_id,
+            },
+        );
         self.endpoint.send_to(&packet, addr)?;
 
         Ok(())
@@ -372,11 +462,14 @@ impl GameServer {
 
     fn handle_disconnect(&mut self, addr: SocketAddr) -> io::Result<()> {
         if let Some(client) = self.connections.remove_by_addr(&addr) {
-            log::info!("Client {} disconnected", client.client_id);
-
             if let Some(entity_id) = client.entity_id {
                 self.world.despawn_entity(entity_id);
             }
+            self.pending_events
+                .push_back(ServerEvent::ClientDisconnected {
+                    client_id: client.client_id,
+                    reason: DisconnectReason::Graceful,
+                });
         }
         Ok(())
     }
@@ -385,18 +478,24 @@ impl GameServer {
         ServerStats {
             tick: self.tick,
             client_count: self.connections.connected_count(),
+            max_clients: self.config.max_clients,
             entity_count: self.world.entity_count(),
-            uptime_secs: self.start_time.elapsed().as_secs(),
             network_stats: self.endpoint.stats().clone(),
         }
     }
 
-    pub fn world(&self) -> &World {
-        &self.world
-    }
-
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
+    pub fn client_infos(&self) -> Vec<crate::tui::ClientInfo> {
+        self.connections
+            .iter()
+            .filter(|c| c.state == ConnectionState::Connected)
+            .map(|c| crate::tui::ClientInfo {
+                client_id: c.client_id,
+                addr: c.addr.to_string(),
+                entity_id: c.entity_id,
+                connected_secs: c.last_receive_time.elapsed().as_secs(),
+                last_ping_ms: self.endpoint.stats().rtt_ms,
+            })
+            .collect()
     }
 }
 
@@ -404,7 +503,7 @@ impl GameServer {
 pub struct ServerStats {
     pub tick: u32,
     pub client_count: usize,
+    pub max_clients: usize,
     pub entity_count: usize,
-    pub uptime_secs: u64,
     pub network_stats: NetworkStats,
 }

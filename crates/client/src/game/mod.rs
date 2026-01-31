@@ -27,7 +27,7 @@ impl GameState {
         }
     }
 
-    pub fn update(&mut self) -> f32 {
+    pub fn update(&mut self, networked: bool) -> f32 {
         let now = Instant::now();
         let dt = self
             .last_frame_time
@@ -37,7 +37,10 @@ impl GameState {
         self.last_frame_time = Some(now);
 
         self.process_mouse_look();
-        self.process_movement(dt);
+
+        if !networked {
+            self.process_local_movement(dt);
+        }
 
         dt
     }
@@ -50,14 +53,12 @@ impl GameState {
 
         let (dx, dy) = self.input.consume_mouse_delta();
         if dx != 0.0 || dy != 0.0 {
-            self.camera.rotate(
-                dx * MOUSE_SENSITIVITY,
-                -dy * MOUSE_SENSITIVITY,
-            );
+            self.camera
+                .rotate(dx * MOUSE_SENSITIVITY, -dy * MOUSE_SENSITIVITY);
         }
     }
 
-    fn process_movement(&mut self, dt: f32) {
+    fn process_local_movement(&mut self, dt: f32) {
         let speed = self.calculate_move_speed(dt);
         if speed == 0.0 {
             return;

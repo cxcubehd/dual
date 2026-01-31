@@ -29,26 +29,27 @@ fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let client = if let Some(server_addr) = args.server {
-        Some(connect_to_server(&server_addr)?)
-    } else {
-        None
-    };
+    if let Some(server_addr) = args.server {
+        let client = connect_to_server(&server_addr)?;
+        run_game(Some(client))?;
+        return Ok(());
+    }
 
-    if args.skip_menu || client.is_some() {
-        launch_game(client)?;
-    } else {
-        match tui::run_menu() {
-            Ok(Some(client)) => {
-                launch_game(Some(client))?;
-            }
-            Ok(None) => {
-                log::info!("Exiting from menu");
-            }
-            Err(e) => {
-                eprintln!("TUI error: {}", e);
-                return Err(e.into());
-            }
+    if args.skip_menu {
+        run_game(None)?;
+        return Ok(());
+    }
+
+    match tui::run_menu() {
+        Ok(Some(client)) => {
+            run_game(Some(client))?;
+        }
+        Ok(None) => {
+            log::info!("Exiting from menu");
+        }
+        Err(e) => {
+            eprintln!("TUI error: {}", e);
+            return Err(e.into());
         }
     }
 
@@ -63,11 +64,9 @@ fn connect_to_server(addr: &str) -> anyhow::Result<NetworkClient> {
     Ok(client)
 }
 
-fn launch_game(client: Option<NetworkClient>) -> anyhow::Result<()> {
+fn run_game(client: Option<NetworkClient>) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = app::App::with_network_client(client);
-
     event_loop.run_app(&mut app)?;
-
     Ok(())
 }

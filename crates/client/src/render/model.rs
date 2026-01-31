@@ -27,6 +27,7 @@ impl ModelUniform {
 }
 
 /// A material with a diffuse texture.
+#[allow(dead_code)]
 pub struct Material {
     pub name: String,
     pub diffuse_texture: Texture,
@@ -50,6 +51,7 @@ impl Material {
 }
 
 /// A mesh is a collection of vertices and indices that reference a material.
+#[allow(dead_code)]
 pub struct Mesh {
     pub name: String,
     pub vertex_buffer: wgpu::Buffer,
@@ -115,7 +117,6 @@ impl Model {
         let uniform = ModelUniform::new(transform);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
-
 
     fn load_buffers(gltf: &gltf::Gltf, glb_bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
         let mut buffer_data = Vec::new();
@@ -183,9 +184,17 @@ impl Model {
                         let start = view.offset();
                         let end = start + view.length();
                         let image_data = &buffer[start..end];
-                        Texture::from_bytes(device, queue, image_data, &material.name().unwrap_or("texture"))?
+                        Texture::from_bytes(
+                            device,
+                            queue,
+                            image_data,
+                            &material.name().unwrap_or("texture"),
+                        )?
                     }
-                    gltf::image::Source::Uri { uri: _, mime_type: _ } => {
+                    gltf::image::Source::Uri {
+                        uri: _,
+                        mime_type: _,
+                    } => {
                         // External textures not supported
                         Texture::white(device, queue)
                     }
@@ -291,6 +300,7 @@ impl Model {
 }
 
 /// Trait for types that can be drawn as models.
+#[allow(dead_code)]
 pub trait DrawModel<'a> {
     fn draw_mesh(
         &mut self,

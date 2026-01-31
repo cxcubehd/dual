@@ -23,7 +23,7 @@ pub struct ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            server_tick_rate: 20,
+            server_tick_rate: 60,
             interpolation_delay: 2,
             connection_timeout_secs: 10,
             command_rate: 60,
@@ -83,6 +83,7 @@ pub struct NetworkClient {
     config: ClientConfig,
     state: ConnectionState,
     client_id: Option<u32>,
+    entity_id: Option<u32>,
     client_salt: u64,
     server_salt: Option<u64>,
     interpolation: InterpolationEngine,
@@ -115,6 +116,7 @@ impl NetworkClient {
             interpolation: InterpolationEngine::new(interpolation_config),
             state: ConnectionState::Disconnected,
             client_id: None,
+            entity_id: None,
             client_salt: Self::generate_salt(),
             server_salt: None,
             command_sequence: 0,
@@ -171,6 +173,7 @@ impl NetworkClient {
     fn reset(&mut self) {
         self.state = ConnectionState::Disconnected;
         self.client_id = None;
+        self.entity_id = None;
         self.server_salt = None;
         self.client_salt = Self::generate_salt();
         self.interpolation.reset();
@@ -268,8 +271,11 @@ impl NetworkClient {
             } => {
                 self.handle_challenge(server_salt, challenge)?;
             }
-            PacketType::ConnectionAccepted { client_id } => {
-                self.handle_connection_accepted(client_id)?;
+            PacketType::ConnectionAccepted {
+                client_id,
+                entity_id,
+            } => {
+                self.handle_connection_accepted(client_id, entity_id)?;
             }
             PacketType::ConnectionDenied { reason } => {
                 self.handle_connection_denied(&reason)?;
@@ -310,10 +316,15 @@ impl NetworkClient {
         Ok(())
     }
 
-    fn handle_connection_accepted(&mut self, client_id: u32) -> io::Result<()> {
-        log::info!("Connected to server with client ID {}", client_id);
+    fn handle_connection_accepted(&mut self, client_id: u32, entity_id: u32) -> io::Result<()> {
+        log::info!(
+            "Connected to server with client ID {}, entity ID {}",
+            client_id,
+            entity_id
+        );
 
         self.client_id = Some(client_id);
+        self.entity_id = Some(entity_id);
         self.state = ConnectionState::Connected;
         self.endpoint.set_state(ConnectionState::Connected);
 
@@ -366,6 +377,15 @@ impl NetworkClient {
 
     pub fn client_id(&self) -> Option<u32> {
         self.client_id
+    }
+
+    pub fn entity_id(&self) -> Option<u32> {
+        self.entity_id
+    }
+
+    pub fn local_player(&self) -> Option<&InterpolatedEntity> {
+        self.entity_id
+            .and_then(|id| self.interpolation.get_entity(id))
     }
 
     pub fn get_entity(&self, entity_id: u32) -> Option<&InterpolatedEntity> {

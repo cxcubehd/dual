@@ -13,7 +13,8 @@ use crossterm::{cursor, execute};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use server::{GameServer, ServerConfig};
+use server::{GameServer, ServerConfig, ServerEvent};
+use tui::TuiState;
 
 #[derive(Parser)]
 #[command(name = "dual-server")]
@@ -36,8 +37,6 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     let args = Args::parse();
     let bind_addr = format!("{}:{}", args.bind, args.port);
 
@@ -50,7 +49,10 @@ fn main() -> Result<()> {
     let mut server = GameServer::new(&bind_addr, config)?;
 
     if args.headless {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        log::info!("Server started on {}", server.local_addr());
         server.run();
+        log::info!("Server shutting down");
     } else {
         run_with_tui(&mut server)?;
     }
@@ -67,16 +69,71 @@ fn run_with_tui(server: &mut GameServer) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let running = server.running();
+    let mut tui_state = TuiState::new();
+
+    tui_state.log_info(format!("Server started on {}", server.local_addr()));
 
     while running.load(Ordering::SeqCst) {
         server.tick_once();
 
+        for event in server.drain_events() {
+            match event {
+                ServerEvent::ClientConnecting { addr } => {
+                    tui_state.log_info(format!("Connection request from {}", addr));
+                }
+                ServerEvent::ClientConnected {
+                    client_id,
+                    addr,
+                    entity_id,
+                } => {
+                    tui_state.log_info(format!(
+                        "Client {} connected from {} (entity {})",
+                        client_id, addr, entity_id
+                    ));
+                }
+                ServerEvent::ClientDisconnected { client_id, reason } => {
+                    tui_state.log_info(format!("Client {} {}", client_id, reason.as_str()));
+                }
+                ServerEvent::ConnectionDenied { addr, reason } => {
+                    tui_state.log_warn(format!("Connection denied to {}: {}", addr, reason));
+                }
+                ServerEvent::Error { message } => {
+                    tui_state.log_error(message);
+                }
+            }
+        }
+
+        if let Some(client_id) = tui_state.take_pending_kick() {
+            server.kick_client(client_id);
+        }
+
         if event::poll(Duration::from_millis(1))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    let clients = server.client_infos();
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             running.store(false, Ordering::SeqCst);
+                        }
+                        KeyCode::Tab => tui_state.next_tab(),
+                        KeyCode::BackTab => tui_state.prev_tab(),
+                        KeyCode::PageUp => tui_state.scroll_up(),
+                        KeyCode::PageDown => tui_state.scroll_down(),
+                        KeyCode::End => tui_state.scroll_to_bottom(),
+                        KeyCode::Up => {
+                            if tui_state.active_tab() == tui::Tab::Connections {
+                                tui_state.select_prev_connection(clients.len());
+                            }
+                        }
+                        KeyCode::Down => {
+                            if tui_state.active_tab() == tui::Tab::Connections {
+                                tui_state.select_next_connection(clients.len());
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Char('K') => {
+                            if tui_state.active_tab() == tui::Tab::Connections {
+                                tui_state.request_kick(&clients);
+                            }
                         }
                         _ => {}
                     }
@@ -84,10 +141,15 @@ fn run_with_tui(server: &mut GameServer) -> io::Result<()> {
             }
         }
 
+        let stats = server.stats();
+        let clients = server.client_infos();
         terminal.draw(|frame| {
-            tui::render(frame, server.stats());
+            tui::render(frame, &tui_state, &stats, &clients);
         })?;
     }
+
+    tui_state.log_info("Shutting down...");
+    server.shutdown_connections();
 
     terminal::disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;

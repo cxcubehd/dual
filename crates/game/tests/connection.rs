@@ -120,7 +120,13 @@ fn test_connection_handshake_full_flow() {
             let header = PacketHeader::new(client.send_sequence, 0, 0);
             client.send_sequence += 1;
 
-            let accepted = Packet::new(header, PacketType::ConnectionAccepted { client_id });
+            let accepted = Packet::new(
+                header,
+                PacketType::ConnectionAccepted {
+                    client_id,
+                    entity_id: 1,
+                },
+            );
             server_endpoint.send_to(&accepted, *from_addr).unwrap();
         }
         _ => panic!("Expected ChallengeResponse"),
@@ -131,7 +137,7 @@ fn test_connection_handshake_full_flow() {
 
     let (packet, _) = &received[0];
     match &packet.payload {
-        PacketType::ConnectionAccepted { client_id } => {
+        PacketType::ConnectionAccepted { client_id, .. } => {
             assert!(*client_id > 0);
         }
         _ => panic!("Expected ConnectionAccepted"),
