@@ -1,4 +1,5 @@
 use glam::Vec3;
+use rapier3d::control::{EffectiveCharacterMovement, KinematicCharacterController};
 use rapier3d::prelude::*;
 
 use super::PhysicsSnapshot;
@@ -85,16 +86,15 @@ impl PhysicsWorld {
     }
 
     pub fn add_player(&mut self, position: Vec3, radius: Real, height: Real) -> RigidBodyHandle {
-        let body = RigidBodyBuilder::dynamic()
+        let body = RigidBodyBuilder::kinematic_position_based()
             .translation(Vector::new(position.x, position.y, position.z))
             .lock_rotations()
-            .ccd_enabled(true)
             .build();
 
         let handle = self.bodies.insert(body);
 
-        let capsule_half_height = (height - 2.0 * radius).max(0.0) / 2.0;
-        let collider = ColliderBuilder::capsule_y(capsule_half_height, radius)
+        let half_height = height / 2.0;
+        let collider = ColliderBuilder::cylinder(half_height, radius)
             .friction(0.0)
             .build();
 
@@ -212,13 +212,37 @@ impl PhysicsWorld {
         let collider_handles: Vec<_> = body.colliders().to_vec();
         for collider_handle in collider_handles {
             if let Some(collider) = self.colliders.get_mut(collider_handle) {
-                let capsule_half_height = (height - 2.0 * radius).max(0.0) / 2.0;
-                collider.set_shape(rapier3d::geometry::SharedShape::capsule_y(
-                    capsule_half_height,
-                    radius,
-                ));
+                let half_height = height / 2.0;
+                collider.set_shape(rapier3d::geometry::SharedShape::cylinder(half_height, radius));
             }
         }
+    }
+
+    pub fn move_character(
+        &self,
+        controller: &KinematicCharacterController,
+        handle: RigidBodyHandle,
+        shape: &SharedShape,
+        position: Pose,
+        desired_translation: Vector,
+        _dt: f32,
+    ) -> EffectiveCharacterMovement {
+        let filter = QueryFilter::default().exclude_rigid_body(handle);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        );
+
+        controller.move_shape(
+            self.integration_parameters.dt,
+            &query_pipeline,
+            shape.as_ref(),
+            &position,
+            desired_translation,
+            |_collision| {},
+        )
     }
 
     fn query_pipeline(&self) -> QueryPipeline<'_> {

@@ -1,15 +1,40 @@
 use glam::Vec3;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlayerState {
     pub strafe_ground_time: f32,
     pub stunned_duration: f32,
     pub crouch_amount: f32,
     pub crouch_target: f32,
+    pub last_crouch_amount: f32,
     pub deferred_impulse_set: Option<Vec3>,
     pub deferred_impulse_add: Vec3,
-    pub last_grounded: bool,
-    pub jump_held_last_frame: bool,
+    pub velocity: Vec3,
+    pub grounded: bool,
+    pub coyote_time: f32,
+    pub jump_consumed: bool,
+    pub jump_requested: bool,
+    pub jump_held: bool,
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self {
+            strafe_ground_time: 0.0,
+            stunned_duration: 0.0,
+            crouch_amount: 0.0,
+            crouch_target: 0.0,
+            last_crouch_amount: 0.0,
+            deferred_impulse_set: None,
+            deferred_impulse_add: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            grounded: true,
+            coyote_time: 0.0,
+            jump_consumed: false,
+            jump_requested: false,
+            jump_held: false,
+        }
+    }
 }
 
 impl PlayerState {

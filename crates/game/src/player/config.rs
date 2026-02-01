@@ -51,6 +51,8 @@ pub struct PlayerConfig {
     pub player_radius: f32,
     pub player_height: f32,
     pub ground_check_threshold: f32,
+
+    pub coyote_time: f32,
 }
 
 impl Default for PlayerConfig {
@@ -108,6 +110,8 @@ impl Default for PlayerConfig {
             player_radius: 0.3,
             player_height: 1.8,
             ground_check_threshold: 1.0,
+
+            coyote_time: 0.1,
         }
     }
 }
