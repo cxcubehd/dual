@@ -13,6 +13,7 @@ glam = { version = "0.31", features = ["serde", "rkyv", "bytecheck"] }
 serde = { version = "1.0", features = ["derive"] }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 bitflags = "2.10"
+rapier3d = { version = "0.32", features = ["enhanced-determinism", "serde-serialize"] }
 
 # Async
 tokio = { version = "1.49", features = ["full"] }

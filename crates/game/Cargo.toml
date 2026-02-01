@@ -11,3 +11,4 @@ rkyv.workspace = true
 bitflags.workspace = true
 log.workspace = true
 thiserror.workspace = true
+rapier3d.workspace = true
