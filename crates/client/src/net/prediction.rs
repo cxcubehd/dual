@@ -40,10 +40,10 @@ impl ClientPrediction {
     pub fn new(tick_rate: u32) -> Self {
         let dt = 1.0 / tick_rate as f32;
         let mut physics = PhysicsWorld::new();
-        
+
         // Load the same testing ground geometry as the server
         TestingGround::spawn_physics_only(&mut physics);
-        
+
         Self {
             pending_commands: VecDeque::with_capacity(MAX_PENDING_COMMANDS),
             position: Vec3::new(0.0, 2.0, 0.0),
@@ -59,15 +59,13 @@ impl ClientPrediction {
             dt,
         }
     }
-    
+
     fn ensure_player_body(&mut self) {
         if self.player_handle.is_none() {
             let config = self.controller.config();
-            let handle = self.physics.add_player(
-                self.position,
-                config.player_radius,
-                config.player_height,
-            );
+            let handle =
+                self.physics
+                    .add_player(self.position, config.player_radius, config.player_height);
             self.player_handle = Some(handle);
         }
     }
@@ -78,9 +76,9 @@ impl ClientPrediction {
 
     pub fn apply_input(&mut self, command: &ClientCommand, _dt: f32) {
         self.ensure_player_body();
-        
+
         let (yaw, pitch) = command.decode_view_angles();
-        
+
         // Create a temporary entity for physics processing
         let mut entity = Entity {
             id: 0,
@@ -94,12 +92,12 @@ impl ClientPrediction {
             flags: 0,
             dirty: false,
         };
-        
+
         // Sync entity position to physics
         if let Some(handle) = self.player_handle {
             self.physics.set_body_position(handle, self.position);
         }
-        
+
         // Process movement through physics
         self.controller.process(
             command,
@@ -108,17 +106,17 @@ impl ClientPrediction {
             &mut self.player_state,
             self.dt,
         );
-        
+
         // Step physics
         self.physics.step();
-        
+
         // Read back position from physics
         if let Some(handle) = self.player_handle {
             if let Some(pos) = self.physics.body_position(handle) {
                 self.position = pos;
             }
         }
-        
+
         self.orientation = Quat::from_euler(glam::EulerRot::YXZ, yaw, -pitch, 0.0);
     }
 
@@ -229,7 +227,7 @@ impl ClientPrediction {
         self.position_error = Vec3::ZERO;
         self.last_acked_sequence = 0;
         self.player_state = PlayerState::default();
-        
+
         // Reset physics body position
         if let Some(handle) = self.player_handle {
             self.physics.set_body_position(handle, self.position);

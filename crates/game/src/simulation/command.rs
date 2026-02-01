@@ -115,7 +115,8 @@ impl CommandProcessor {
         );
 
         let state = self.player_states.entry(entity.id).or_default();
-        self.controller.process(command, entity, physics, state, self.dt);
+        self.controller
+            .process(command, entity, physics, state, self.dt);
     }
 
     pub fn process_all(

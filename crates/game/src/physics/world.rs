@@ -233,7 +233,7 @@ impl PhysicsWorld {
 
     /// Check if a player is grounded by casting a ray downward from their center.
     /// The threshold should account for the player's physical extent plus a small margin.
-    /// For a capsule player: center to bottom = (height/2) 
+    /// For a capsule player: center to bottom = (height/2)
     /// So threshold should be (height/2) + margin (e.g., 0.1)
     pub fn is_grounded(&self, handle: RigidBodyHandle, threshold: Real) -> bool {
         let Some(body) = self.bodies.get(handle) else {

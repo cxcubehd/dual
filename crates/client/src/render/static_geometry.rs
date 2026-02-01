@@ -102,6 +102,7 @@ fn indices_as_bytes(indices: &[u16]) -> &[u8] {
 }
 
 /// Create a ground plane mesh (grid pattern for visibility)
+/// Normal points UP (+Y), visible when looking from above
 fn create_ground_mesh(size: f32) -> (Vec<Vertex>, Vec<u16>) {
     let half = size / 2.0;
     let tile_size = 4.0; // Size of each grid tile
@@ -125,6 +126,8 @@ fn create_ground_mesh(size: f32) -> (Vec<Vertex>, Vec<u16>) {
 
             let base_idx = vertices.len() as u16;
 
+            // Vertices for a quad at Y=0
+            // Looking from above (+Y), arranged for CCW winding
             vertices.push(Vertex {
                 position: [x0, 0.0, z0],
                 color,
@@ -142,14 +145,16 @@ fn create_ground_mesh(size: f32) -> (Vec<Vertex>, Vec<u16>) {
                 color,
             });
 
-            // Left-handed system: clockwise winding for front faces (looking down at ground)
+            // CCW winding when viewed from above (+Y looking down)
+            // Triangle 1: 0 -> 2 -> 1 (x0z0 -> x1z1 -> x1z0)
+            // Triangle 2: 0 -> 3 -> 2 (x0z0 -> x0z1 -> x1z1)
             indices.extend_from_slice(&[
                 base_idx,
+                base_idx + 2,
                 base_idx + 1,
-                base_idx + 2,
                 base_idx,
-                base_idx + 2,
                 base_idx + 3,
+                base_idx + 2,
             ]);
         }
     }
@@ -158,62 +163,46 @@ fn create_ground_mesh(size: f32) -> (Vec<Vertex>, Vec<u16>) {
 }
 
 /// Create a box mesh with the given half extents
+/// Uses the same winding order as cube.rs which is known to work
 fn create_box_mesh(half_extents: Vec3, color: [f32; 3]) -> (Vec<Vertex>, Vec<u16>) {
     let hx = half_extents.x;
     let hy = half_extents.y;
     let hz = half_extents.z;
 
     // Slightly vary colors per face for depth perception
-    let top_color = [color[0] * 1.1, color[1] * 1.1, color[2] * 1.1];
-    let bottom_color = [color[0] * 0.7, color[1] * 0.7, color[2] * 0.7];
+    let top_color = [
+        (color[0] * 1.2).min(1.0),
+        (color[1] * 1.2).min(1.0),
+        (color[2] * 1.2).min(1.0),
+    ];
     let front_color = color;
-    let back_color = [color[0] * 0.9, color[1] * 0.9, color[2] * 0.9];
-    let left_color = [color[0] * 0.85, color[1] * 0.85, color[2] * 0.85];
-    let right_color = [color[0] * 0.95, color[1] * 0.95, color[2] * 0.95];
+    let back_color = [color[0] * 0.8, color[1] * 0.8, color[2] * 0.8];
 
+    // Vertex layout matches cube.rs exactly (8 vertices, shared between faces)
+    // 0-3: front face (z = +hz), 4-7: back face (z = -hz)
     #[rustfmt::skip]
     let vertices = vec![
-        // Front face
-        Vertex { position: [-hx, -hy,  hz], color: front_color },
-        Vertex { position: [ hx, -hy,  hz], color: front_color },
-        Vertex { position: [ hx,  hy,  hz], color: front_color },
-        Vertex { position: [-hx,  hy,  hz], color: front_color },
-        // Back face
-        Vertex { position: [-hx, -hy, -hz], color: back_color },
-        Vertex { position: [ hx, -hy, -hz], color: back_color },
-        Vertex { position: [ hx,  hy, -hz], color: back_color },
-        Vertex { position: [-hx,  hy, -hz], color: back_color },
-        // Top face
-        Vertex { position: [-hx,  hy, -hz], color: top_color },
-        Vertex { position: [ hx,  hy, -hz], color: top_color },
-        Vertex { position: [ hx,  hy,  hz], color: top_color },
-        Vertex { position: [-hx,  hy,  hz], color: top_color },
-        // Bottom face
-        Vertex { position: [-hx, -hy, -hz], color: bottom_color },
-        Vertex { position: [ hx, -hy, -hz], color: bottom_color },
-        Vertex { position: [ hx, -hy,  hz], color: bottom_color },
-        Vertex { position: [-hx, -hy,  hz], color: bottom_color },
-        // Right face
-        Vertex { position: [ hx, -hy, -hz], color: right_color },
-        Vertex { position: [ hx,  hy, -hz], color: right_color },
-        Vertex { position: [ hx,  hy,  hz], color: right_color },
-        Vertex { position: [ hx, -hy,  hz], color: right_color },
-        // Left face
-        Vertex { position: [-hx, -hy, -hz], color: left_color },
-        Vertex { position: [-hx,  hy, -hz], color: left_color },
-        Vertex { position: [-hx,  hy,  hz], color: left_color },
-        Vertex { position: [-hx, -hy,  hz], color: left_color },
+        // Front face (z = +hz)
+        Vertex { position: [-hx, -hy,  hz], color: front_color }, // 0: bottom-left
+        Vertex { position: [ hx, -hy,  hz], color: front_color }, // 1: bottom-right
+        Vertex { position: [ hx,  hy,  hz], color: top_color },   // 2: top-right
+        Vertex { position: [-hx,  hy,  hz], color: top_color },   // 3: top-left
+        // Back face (z = -hz)
+        Vertex { position: [-hx, -hy, -hz], color: back_color },  // 4: bottom-left
+        Vertex { position: [ hx, -hy, -hz], color: back_color },  // 5: bottom-right
+        Vertex { position: [ hx,  hy, -hz], color: top_color },   // 6: top-right
+        Vertex { position: [-hx,  hy, -hz], color: top_color },   // 7: top-left
     ];
 
-    // Left-handed system: clockwise winding when viewed from outside
+    // Index layout EXACTLY matches cube.rs winding order
     #[rustfmt::skip]
     let indices: Vec<u16> = vec![
-        0,  2,  1,  0,  3,  2,   // Front (+Z)
-        4,  5,  6,  4,  6,  7,   // Back (-Z)
-        8,  10, 9,  8,  11, 10,  // Top (+Y)
-        12, 13, 14, 12, 14, 15,  // Bottom (-Y)
-        16, 17, 18, 16, 18, 19,  // Right (+X)
-        20, 22, 21, 20, 23, 22,  // Left (-X)
+        0, 1, 2, 0, 2, 3,  // Front face (+Z)
+        4, 6, 5, 4, 7, 6,  // Back face (-Z)
+        3, 2, 6, 3, 6, 7,  // Top face (+Y)
+        0, 5, 1, 0, 4, 5,  // Bottom face (-Y)
+        1, 6, 2, 1, 5, 6,  // Right face (+X)
+        0, 7, 4, 0, 3, 7,  // Left face (-X)
     ];
 
     (vertices, indices)

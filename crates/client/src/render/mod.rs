@@ -261,10 +261,8 @@ impl Renderer {
             MenuOverlay::new(&device, &queue, config.format, size.width, size.height);
 
         // Create testing ground static geometry
-        let static_meshes = Self::create_testing_ground_meshes(
-            &device,
-            &model_transform_bind_group_layout,
-        );
+        let static_meshes =
+            Self::create_testing_ground_meshes(&device, &model_transform_bind_group_layout);
 
         let renderer = Self {
             surface,
@@ -297,79 +295,90 @@ impl Renderer {
 
         Ok(renderer)
     }
-    
+
     /// Create static geometry meshes matching the server's TestingGround
     fn create_testing_ground_meshes(
         device: &wgpu::Device,
         transform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Vec<StaticMesh> {
         let mut meshes = Vec::new();
-        
+
         // Ground plane (200m x 200m at y=0) - server uses GROUND_SIZE=100 as half-extent
-        meshes.push(StaticMesh::new_ground(device, transform_bind_group_layout, 200.0, 0.0));
-        
+        meshes.push(StaticMesh::new_ground(
+            device,
+            transform_bind_group_layout,
+            200.0,
+            0.0,
+        ));
+
         // Platform colors
         let platform_color = [0.5, 0.5, 0.55];
         let stair_color = [0.45, 0.45, 0.5];
-        
+
         // Platform obstacles (matching server's add_platform_obstacles)
         // Platform 1: pos(5, 0.25, 0), half_extents(1, 0.25, 1)
         meshes.push(StaticMesh::new_box(
-            device, transform_bind_group_layout,
+            device,
+            transform_bind_group_layout,
             Vec3::new(5.0, 0.25, 0.0),
             Vec3::new(1.0, 0.25, 1.0),
             platform_color,
         ));
-        
+
         // Platform 2: pos(8, 0.5, 0), half_extents(1, 0.5, 1)
         meshes.push(StaticMesh::new_box(
-            device, transform_bind_group_layout,
+            device,
+            transform_bind_group_layout,
             Vec3::new(8.0, 0.5, 0.0),
             Vec3::new(1.0, 0.5, 1.0),
             platform_color,
         ));
-        
+
         // Platform 3: pos(11, 1.0, 0), half_extents(1, 1, 1)
         meshes.push(StaticMesh::new_box(
-            device, transform_bind_group_layout,
+            device,
+            transform_bind_group_layout,
             Vec3::new(11.0, 1.0, 0.0),
             Vec3::new(1.0, 1.0, 1.0),
             platform_color,
         ));
-        
+
         // Platform 4: pos(14, 1.5, 0), half_extents(1.5, 1.5, 1.5)
         meshes.push(StaticMesh::new_box(
-            device, transform_bind_group_layout,
+            device,
+            transform_bind_group_layout,
             Vec3::new(14.0, 1.5, 0.0),
             Vec3::new(1.5, 1.5, 1.5),
             platform_color,
         ));
-        
+
         // Platform 5: pos(18, 2.0, 0), half_extents(2, 2, 2)
         meshes.push(StaticMesh::new_box(
-            device, transform_bind_group_layout,
+            device,
+            transform_bind_group_layout,
             Vec3::new(18.0, 2.0, 0.0),
             Vec3::new(2.0, 2.0, 2.0),
             platform_color,
         ));
-        
+
         // Stairs (10 steps) - matching server's add_stair_platforms
         let stair_start = Vec3::new(-5.0, 0.0, 5.0);
         let step_height = 0.3;
         let step_depth = 0.4;
         let step_width = 2.0;
-        
+
         for i in 0..10 {
             let y = step_height * (i as f32 + 0.5);
             let z = stair_start.z + step_depth * i as f32;
             meshes.push(StaticMesh::new_box(
-                device, transform_bind_group_layout,
+                device,
+                transform_bind_group_layout,
                 Vec3::new(stair_start.x, y, z),
                 Vec3::new(step_width, step_height * 0.5, step_depth * 0.5),
                 stair_color,
             ));
         }
-        
+
         meshes
     }
 

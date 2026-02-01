@@ -142,12 +142,12 @@ impl TestingGround {
             }
         }
     }
-    
+
     /// Spawn only physics colliders without creating world entities.
     /// Used for client-side prediction where we only need collision geometry.
     pub fn spawn_physics_only(physics: &mut PhysicsWorld) {
         let ground = Self::new();
-        
+
         for object in &ground.objects {
             match object.kind {
                 MapObjectKind::Ground => {

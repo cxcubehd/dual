@@ -165,7 +165,8 @@ impl PlayerController {
     ) -> Vec3 {
         let params = self.movement_params(grounded, initial.length(), state.crouch_amount);
         let target = self.calculate_target_velocity(initial, input, &params, state, dt);
-        let strafed = self.apply_strafe(initial, input.world_direction, target, grounded, state, dt);
+        let strafed =
+            self.apply_strafe(initial, input.world_direction, target, grounded, state, dt);
         self.apply_deceleration(strafed, target, input, grounded, &params, state, dt)
     }
 
@@ -264,13 +265,7 @@ impl PlayerController {
         }
     }
 
-    fn apply_air_strafe(
-        &self,
-        initial: Vec3,
-        move_dir: Vec3,
-        target: Vec3,
-        dt: f32,
-    ) -> Vec3 {
+    fn apply_air_strafe(&self, initial: Vec3, move_dir: Vec3, target: Vec3, dt: f32) -> Vec3 {
         if move_dir.length_squared() < 0.001 {
             return target;
         }
@@ -278,7 +273,11 @@ impl PlayerController {
         let initial_speed = initial.length();
         if initial_speed < 0.001 {
             let result = initial + move_dir * self.config.strafe_air_acceleration * dt;
-            return if result.length() < target.length() { target } else { result };
+            return if result.length() < target.length() {
+                target
+            } else {
+                result
+            };
         }
 
         let strafe_accel = self.config.strafe_air_acceleration * dt;
@@ -297,7 +296,11 @@ impl PlayerController {
             initial
         };
 
-        if result.length() < target.length() { target } else { result }
+        if result.length() < target.length() {
+            target
+        } else {
+            result
+        }
     }
 
     fn blend_ground_strafe(&self, velocity: Vec3, target: Vec3, state: &PlayerState) -> Vec3 {
@@ -322,9 +325,13 @@ impl PlayerController {
         state: &PlayerState,
         dt: f32,
     ) -> Vec3 {
-        let should_decelerate =
-            !self.should_preserve_momentum(input, grounded, velocity.length(), target.length(), state)
-                || state.is_stunned();
+        let should_decelerate = !self.should_preserve_momentum(
+            input,
+            grounded,
+            velocity.length(),
+            target.length(),
+            state,
+        ) || state.is_stunned();
 
         if !should_decelerate {
             return velocity;

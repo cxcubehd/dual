@@ -267,11 +267,8 @@ impl GameServer {
 
                 if let Some(entity_id) = client.entity_id {
                     if let Some(entity) = self.world.get_by_id_mut(entity_id) {
-                        self.command_processor.process(
-                            &queued.command,
-                            entity,
-                            &mut self.physics,
-                        );
+                        self.command_processor
+                            .process(&queued.command, entity, &mut self.physics);
                     }
                 }
             }
@@ -487,18 +484,18 @@ impl GameServer {
         let spawn_pos = Vec3::new(0.0, 2.0, 0.0);
         let entity_handle = self.world.spawn_player(spawn_pos);
         let entity_id = entity_handle.id();
-        
+
         // Create physics body for the player using config values
         let config = self.command_processor.config();
         if let Some(entity) = self.world.get_by_id_mut(entity_id) {
             PhysicsSync::create_physics_body(
-                entity, 
-                &mut self.physics, 
-                config.player_radius, 
+                entity,
+                &mut self.physics,
+                config.player_radius,
                 config.player_height,
             );
         }
-        
+
         client.entity_id = Some(entity_id);
 
         self.pending_events.push_back(ServerEvent::ClientConnected {
