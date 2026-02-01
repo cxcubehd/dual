@@ -78,8 +78,15 @@ impl PlayerController {
         let velocity = self.compute_velocity(state, &input, grounded, dt);
         let desired_translation = velocity * dt;
 
+        let mut character_controller = self.character_controller.clone();
+        if velocity.y > 0.0 {
+            character_controller.snap_to_ground = None;
+            character_controller.autostep = None;
+        }
+
         let corrected = self.move_character(
             physics,
+            &character_controller,
             handle,
             &character_shape,
             character_pos,
@@ -88,12 +95,21 @@ impl PlayerController {
         );
 
         state.grounded = corrected.grounded;
-        state.velocity = velocity;
-        state.velocity.y = if corrected.grounded && velocity.y <= 0.0 {
-            0.0
+        if dt > 1e-6 {
+            let v = corrected.translation / dt;
+            state.velocity = Vec3::new(v.x, v.y, v.z);
+            
+            // Prevent stepping/slope climbing from being interpreted as upward velocity
+            if velocity.y <= 0.0 && state.velocity.y > 0.0 {
+                state.velocity.y = 0.0;
+            }
         } else {
-            velocity.y + (corrected.translation.y - desired_translation.y) / dt
-        };
+            state.velocity = Vec3::ZERO;
+        }
+
+        if corrected.grounded && velocity.y <= 0.0 {
+            state.velocity.y = 0.0;
+        }
 
         let current_pos = character_pos.translation;
         let new_position = current_pos + corrected.translation;
@@ -403,6 +419,7 @@ impl PlayerController {
     fn move_character(
         &self,
         physics: &mut PhysicsWorld,
+        controller: &KinematicCharacterController,
         handle: RigidBodyHandle,
         shape: &SharedShape,
         position: Pose,
@@ -410,7 +427,7 @@ impl PlayerController {
         dt: f32,
     ) -> EffectiveCharacterMovement {
         physics.move_character(
-            &self.character_controller,
+            controller,
             handle,
             shape,
             position,
