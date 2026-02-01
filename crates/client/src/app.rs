@@ -199,10 +199,16 @@ impl App {
             let input_state = game
                 .input
                 .to_net_input(game.camera.yaw as f32, game.camera.pitch as f32);
-            game.input.consume_scroll_jump();
 
-            if let Err(e) = client.update(dt, Some(&input_state)) {
-                log::error!("Network error: {}", e);
+            match client.update(dt, Some(&input_state)) {
+                Ok(ticks_processed) => {
+                    if ticks_processed {
+                        game.input.consume_scroll_jump();
+                    }
+                }
+                Err(e) => {
+                    log::error!("Network error: {}", e);
+                }
             }
 
             if client.state() == ConnectionState::Disconnected {

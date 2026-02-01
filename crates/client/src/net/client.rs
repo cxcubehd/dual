@@ -142,9 +142,11 @@ impl NetworkClient {
         Ok(())
     }
 
-    pub fn update(&mut self, delta_time: f32, input: Option<&InputState>) -> io::Result<()> {
+    pub fn update(&mut self, delta_time: f32, input: Option<&InputState>) -> io::Result<bool> {
         self.process_network()?;
         self.process_resends()?;
+
+        let mut ticks_processed = false;
 
         match self.state {
             ConnectionState::Connecting | ConnectionState::ChallengeResponse => {
@@ -164,6 +166,7 @@ impl NetworkClient {
 
                 while self.input_accumulator >= step {
                     self.input_accumulator -= step;
+                    ticks_processed = true;
 
                     if let Some(input) = input {
                         let command =
@@ -194,7 +197,7 @@ impl NetworkClient {
             _ => {}
         }
 
-        Ok(())
+        Ok(ticks_processed)
     }
 
     fn process_resends(&mut self) -> io::Result<()> {
