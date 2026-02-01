@@ -61,6 +61,10 @@ impl PlayerController {
         state: &mut PlayerState,
         dt: f32,
     ) {
+        if dt < 1e-6 {
+            return;
+        }
+
         let Some(handle) = entity.physics_handle else {
             return;
         };
@@ -95,16 +99,12 @@ impl PlayerController {
         );
 
         state.grounded = corrected.grounded;
-        if dt > 1e-6 {
-            let v = corrected.translation / dt;
-            state.velocity = Vec3::new(v.x, v.y, v.z);
-            
-            // Prevent stepping/slope climbing from being interpreted as upward velocity
-            if velocity.y <= 0.0 && state.velocity.y > 0.0 {
-                state.velocity.y = 0.0;
-            }
-        } else {
-            state.velocity = Vec3::ZERO;
+        
+        let v = corrected.translation / dt;
+        state.velocity = Vec3::new(v.x, v.y, v.z);
+
+        if velocity.y <= 0.0 && state.velocity.y > 0.0 {
+            state.velocity.y = 0.0;
         }
 
         if corrected.grounded && velocity.y <= 0.0 {
