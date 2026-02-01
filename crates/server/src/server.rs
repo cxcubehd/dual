@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 
 use dual::{
-    ClientCommand, ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats, Packet,
-    PacketHeader, PacketLossSimulation, PacketType, Reliability, SnapshotBuffer, World,
+    ClientCommand, ConnectionManager, ConnectionState, EntityHandle, NetworkEndpoint, NetworkStats,
+    Packet, PacketHeader, PacketLossSimulation, PacketType, Reliability, SnapshotBuffer, World,
     WorldSnapshot,
 };
 
@@ -134,7 +134,7 @@ impl GameServer {
 
         if let Some(client) = self.connections.remove(client_id) {
             if let Some(entity_id) = client.entity_id {
-                self.world.despawn_entity(entity_id);
+                self.world.despawn(EntityHandle(entity_id));
             }
             self.pending_events
                 .push_back(ServerEvent::ClientDisconnected {
@@ -232,7 +232,7 @@ impl GameServer {
         self.world.advance_tick();
         self.tick = self.world.tick();
 
-        let snapshot = self.world.generate_snapshot(0);
+        let snapshot = self.world.snapshot(0);
         self.snapshot_history.push(snapshot);
 
         if self.tick % self.config.snapshot_send_rate == 0 {
@@ -259,7 +259,7 @@ impl GameServer {
                 }
 
                 if let Some(entity_id) = client.entity_id {
-                    if let Some(entity) = self.world.get_entity_mut(entity_id) {
+                    if let Some(entity) = self.world.get_by_id_mut(entity_id) {
                         apply_command(entity, &queued.command, dt);
                     }
                 }
@@ -313,14 +313,12 @@ impl GameServer {
         let baseline_age = current_tick.saturating_sub(last_acked_tick);
 
         if last_acked_tick > 0 && baseline_age < max_delta_age {
-            if let Some(baseline) = self.snapshot_history.get_by_tick(last_acked_tick) {
-                return self
-                    .world
-                    .generate_delta_from_baseline(baseline, last_cmd_ack);
+            if let Some(baseline) = self.snapshot_history.get(last_acked_tick) {
+                return self.world.delta_from_baseline(baseline, last_cmd_ack);
             }
         }
 
-        self.world.generate_snapshot(last_cmd_ack)
+        self.world.snapshot(last_cmd_ack)
     }
 
     fn process_network(&mut self) -> io::Result<()> {
@@ -474,7 +472,8 @@ impl GameServer {
         client.state = ConnectionState::Connected;
         let client_id = client.client_id;
 
-        let entity_id = self.world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+        let entity_handle = self.world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+        let entity_id = entity_handle.id();
         client.entity_id = Some(entity_id);
 
         self.pending_events.push_back(ServerEvent::ClientConnected {
@@ -539,7 +538,7 @@ impl GameServer {
     fn handle_disconnect(&mut self, addr: SocketAddr) -> io::Result<()> {
         if let Some(client) = self.connections.remove_by_addr(&addr) {
             if let Some(entity_id) = client.entity_id {
-                self.world.despawn_entity(entity_id);
+                self.world.despawn(EntityHandle(entity_id));
             }
             self.pending_events
                 .push_back(ServerEvent::ClientDisconnected {
