@@ -125,6 +125,31 @@ impl PhysicsWorld {
         self.colliders.insert(collider)
     }
 
+    pub fn add_dynamic_box(
+        &mut self,
+        position: Vec3,
+        half_extents: Vec3,
+        mass: Real,
+    ) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::dynamic()
+            .translation(Vector::new(position.x, position.y, position.z))
+            .ccd_enabled(true)
+            .build();
+
+        let handle = self.bodies.insert(body);
+
+        let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+            .mass(mass)
+            .friction(0.5)
+            .restitution(0.3)
+            .build();
+
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.bodies);
+
+        handle
+    }
+
     pub fn remove_body(&mut self, handle: RigidBodyHandle) {
         self.bodies.remove(
             handle,

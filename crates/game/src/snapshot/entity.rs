@@ -13,6 +13,7 @@ pub enum EntityType {
     Item = 2,
     Static = 3,
     Trigger = 4,
+    DynamicProp = 5,
 }
 
 impl From<u8> for EntityType {
@@ -23,6 +24,7 @@ impl From<u8> for EntityType {
             2 => Self::Item,
             3 => Self::Static,
             4 => Self::Trigger,
+            5 => Self::DynamicProp,
             _ => Self::Static,
         }
     }

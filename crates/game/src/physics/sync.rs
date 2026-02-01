@@ -61,6 +61,9 @@ impl PhysicsSync {
         let handle = match entity.entity_type {
             EntityType::Player => physics.add_player(entity.position, player_radius, player_height),
             EntityType::Projectile => physics.add_kinematic(entity.position),
+            EntityType::DynamicProp => {
+                physics.add_dynamic_box(entity.position, glam::Vec3::splat(0.5), 10.0)
+            }
             EntityType::Static | EntityType::Trigger | EntityType::Item => {
                 return;
             }

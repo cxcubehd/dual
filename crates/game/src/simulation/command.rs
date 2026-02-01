@@ -1,9 +1,8 @@
-use std::collections::VecDeque;
-
-use glam::Vec3;
+use std::collections::{HashMap, VecDeque};
 
 use crate::net::ClientCommand;
 use crate::physics::{PhysicsSync, PhysicsWorld};
+use crate::player::{PlayerConfig, PlayerController, PlayerState};
 use crate::snapshot::{Entity, World};
 
 #[derive(Debug, Clone)]
@@ -59,11 +58,9 @@ impl CommandBuffer {
 }
 
 pub struct CommandProcessor {
-    move_speed: f32,
-    sprint_multiplier: f32,
-    jump_impulse: f32,
-    player_radius: f32,
-    player_height: f32,
+    controller: PlayerController,
+    player_states: HashMap<u32, PlayerState>,
+    dt: f32,
 }
 
 impl Default for CommandProcessor {
@@ -73,72 +70,56 @@ impl Default for CommandProcessor {
 }
 
 impl CommandProcessor {
+    const TICK_RATE: f32 = 1.0 / 60.0;
+
     pub fn new() -> Self {
         Self {
-            move_speed: 5.0,
-            sprint_multiplier: 2.0,
-            jump_impulse: 5.0,
-            player_radius: 0.3,
-            player_height: 1.8,
+            controller: PlayerController::default(),
+            player_states: HashMap::new(),
+            dt: Self::TICK_RATE,
         }
     }
 
-    pub fn with_speeds(move_speed: f32, sprint_multiplier: f32, jump_impulse: f32) -> Self {
+    pub fn with_config(config: PlayerConfig) -> Self {
         Self {
-            move_speed,
-            sprint_multiplier,
-            jump_impulse,
-            ..Self::new()
+            controller: PlayerController::new(config),
+            player_states: HashMap::new(),
+            dt: Self::TICK_RATE,
         }
+    }
+
+    pub fn config(&self) -> &PlayerConfig {
+        self.controller.config()
+    }
+
+    pub fn player_state(&self, entity_id: u32) -> Option<&PlayerState> {
+        self.player_states.get(&entity_id)
+    }
+
+    pub fn player_state_mut(&mut self, entity_id: u32) -> &mut PlayerState {
+        self.player_states.entry(entity_id).or_default()
     }
 
     pub fn process(
-        &self,
+        &mut self,
         command: &ClientCommand,
         entity: &mut Entity,
         physics: &mut PhysicsWorld,
     ) {
-        PhysicsSync::create_physics_body(entity, physics, self.player_radius, self.player_height);
-
-        let move_dir = command.decode_move_direction();
-        let (yaw, pitch) = command.decode_view_angles();
-
-        let speed = if command.has_flag(ClientCommand::FLAG_SPRINT) {
-            self.move_speed * self.sprint_multiplier
-        } else {
-            self.move_speed
-        };
-
-        let move_vec = Vec3::new(move_dir[0], 0.0, move_dir[2]);
-        let world_move = if move_vec.length_squared() > 0.001 {
-            let normalized = move_vec.normalize();
-            let (sin_yaw, cos_yaw) = yaw.sin_cos();
-            Vec3::new(
-                normalized.x * cos_yaw + normalized.z * sin_yaw,
-                0.0,
-                -normalized.x * sin_yaw + normalized.z * cos_yaw,
-            )
-        } else {
-            Vec3::ZERO
-        };
-
-        let wants_jump = command.has_flag(ClientCommand::FLAG_JUMP);
-
-        PhysicsSync::apply_movement(
+        let config = self.controller.config();
+        PhysicsSync::create_physics_body(
             entity,
             physics,
-            world_move,
-            speed,
-            wants_jump,
-            self.jump_impulse,
+            config.player_radius,
+            config.player_height,
         );
 
-        entity.orientation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, -pitch, 0.0);
-        entity.dirty = true;
+        let state = self.player_states.entry(entity.id).or_default();
+        self.controller.process(command, entity, physics, state, self.dt);
     }
 
     pub fn process_all(
-        &self,
+        &mut self,
         commands: &[PendingCommand],
         world: &mut World,
         physics: &mut PhysicsWorld,
@@ -148,6 +129,10 @@ impl CommandProcessor {
                 self.process(&pending.command, entity, physics);
             }
         }
+    }
+
+    pub fn remove_player(&mut self, entity_id: u32) {
+        self.player_states.remove(&entity_id);
     }
 }
 
@@ -163,9 +148,9 @@ mod tests {
         let cmd2 = ClientCommand::new(3, 2);
         let cmd3 = ClientCommand::new(10, 3);
 
-        buffer.push(1, cmd2.clone());
-        buffer.push(1, cmd1.clone());
-        buffer.push(1, cmd3.clone());
+        buffer.push(1, cmd2);
+        buffer.push(1, cmd1);
+        buffer.push(1, cmd3);
 
         let drained = buffer.drain_for_tick(5);
         assert_eq!(drained.len(), 2);
