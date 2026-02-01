@@ -4,6 +4,7 @@ mod debug_overlay;
 mod menu_overlay;
 mod model;
 mod skybox;
+mod static_geometry;
 mod texture;
 mod vertex;
 
@@ -18,8 +19,11 @@ use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
 use debug_overlay::DebugOverlay;
 use skybox::Skybox;
+use static_geometry::StaticMesh;
+#[allow(unused_imports)]
 use vertex::Vertex;
 
+#[allow(unused_imports)]
 use crate::assets::Assets;
 
 use std::sync::Arc;
@@ -97,9 +101,12 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    // Legacy basic pipeline (for colored cubes)
+    // Legacy basic pipeline (for colored cubes) - kept for potential future use
+    #[allow(dead_code)]
     basic_pipeline: wgpu::RenderPipeline,
+    #[allow(dead_code)]
     vertex_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     // Camera
@@ -108,16 +115,21 @@ pub struct Renderer {
     #[allow(dead_code)]
     camera_bind_group_layout: wgpu::BindGroupLayout,
     // Model pipeline (for textured models)
+    #[allow(dead_code)]
     model_pipeline: wgpu::RenderPipeline,
+    #[allow(dead_code)]
     texture_bind_group_layout: wgpu::BindGroupLayout,
     model_transform_bind_group_layout: wgpu::BindGroupLayout,
     // Models
+    #[allow(dead_code)]
     models: Vec<Model>,
     // Player cubes
     player_cube_pipeline: wgpu::RenderPipeline,
     player_cube_vertex_buffer: wgpu::Buffer,
     player_cube_index_buffer: wgpu::Buffer,
     player_cubes: Vec<PlayerCube>,
+    // Static geometry (ground, platforms)
+    static_meshes: Vec<StaticMesh>,
     // Skybox
     skybox: Option<Skybox>,
     // Other
@@ -248,7 +260,13 @@ impl Renderer {
         let menu_overlay =
             MenuOverlay::new(&device, &queue, config.format, size.width, size.height);
 
-        let mut renderer = Self {
+        // Create testing ground static geometry
+        let static_meshes = Self::create_testing_ground_meshes(
+            &device,
+            &model_transform_bind_group_layout,
+        );
+
+        let renderer = Self {
             surface,
             device,
             queue,
@@ -268,6 +286,7 @@ impl Renderer {
             player_cube_vertex_buffer,
             player_cube_index_buffer,
             player_cubes: Vec::new(),
+            static_meshes,
             skybox,
             msaa_view,
             depth_view,
@@ -276,22 +295,82 @@ impl Renderer {
             size,
         };
 
-        // Load the barn lamp model
-        if let Some(bytes) = Assets::load_bytes("models/AnisotropyBarnLamp.glb") {
-            if let Ok(index) = renderer.load_model_from_bytes(&bytes, "AnisotropyBarnLamp") {
-                // Scale up by 25 and move next to cube
-                let transform = Mat4::from_translation(Vec3::new(-0.5, 0.0, 0.0))
-                    * Mat4::from_scale(Vec3::splat(9.0))
-                    * Mat4::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), 270f32.to_radians());
-                renderer.set_model_transform(index, transform);
-            } else {
-                log::error!("Failed to load model");
-            }
-        } else {
-            log::warn!("Model models/AnisotropyBarnLamp.glb not found in assets");
-        }
-
         Ok(renderer)
+    }
+    
+    /// Create static geometry meshes matching the server's TestingGround
+    fn create_testing_ground_meshes(
+        device: &wgpu::Device,
+        transform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Vec<StaticMesh> {
+        let mut meshes = Vec::new();
+        
+        // Ground plane (200m x 200m at y=0) - server uses GROUND_SIZE=100 as half-extent
+        meshes.push(StaticMesh::new_ground(device, transform_bind_group_layout, 200.0, 0.0));
+        
+        // Platform colors
+        let platform_color = [0.5, 0.5, 0.55];
+        let stair_color = [0.45, 0.45, 0.5];
+        
+        // Platform obstacles (matching server's add_platform_obstacles)
+        // Platform 1: pos(5, 0.25, 0), half_extents(1, 0.25, 1)
+        meshes.push(StaticMesh::new_box(
+            device, transform_bind_group_layout,
+            Vec3::new(5.0, 0.25, 0.0),
+            Vec3::new(1.0, 0.25, 1.0),
+            platform_color,
+        ));
+        
+        // Platform 2: pos(8, 0.5, 0), half_extents(1, 0.5, 1)
+        meshes.push(StaticMesh::new_box(
+            device, transform_bind_group_layout,
+            Vec3::new(8.0, 0.5, 0.0),
+            Vec3::new(1.0, 0.5, 1.0),
+            platform_color,
+        ));
+        
+        // Platform 3: pos(11, 1.0, 0), half_extents(1, 1, 1)
+        meshes.push(StaticMesh::new_box(
+            device, transform_bind_group_layout,
+            Vec3::new(11.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            platform_color,
+        ));
+        
+        // Platform 4: pos(14, 1.5, 0), half_extents(1.5, 1.5, 1.5)
+        meshes.push(StaticMesh::new_box(
+            device, transform_bind_group_layout,
+            Vec3::new(14.0, 1.5, 0.0),
+            Vec3::new(1.5, 1.5, 1.5),
+            platform_color,
+        ));
+        
+        // Platform 5: pos(18, 2.0, 0), half_extents(2, 2, 2)
+        meshes.push(StaticMesh::new_box(
+            device, transform_bind_group_layout,
+            Vec3::new(18.0, 2.0, 0.0),
+            Vec3::new(2.0, 2.0, 2.0),
+            platform_color,
+        ));
+        
+        // Stairs (10 steps) - matching server's add_stair_platforms
+        let stair_start = Vec3::new(-5.0, 0.0, 5.0);
+        let step_height = 0.3;
+        let step_depth = 0.4;
+        let step_width = 2.0;
+        
+        for i in 0..10 {
+            let y = step_height * (i as f32 + 0.5);
+            let z = stair_start.z + step_depth * i as f32;
+            meshes.push(StaticMesh::new_box(
+                device, transform_bind_group_layout,
+                Vec3::new(stair_start.x, y, z),
+                Vec3::new(step_width, step_height * 0.5, step_depth * 0.5),
+                stair_color,
+            ));
+        }
+        
+        meshes
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -327,6 +406,7 @@ impl Renderer {
     /// Load a GLB model from bytes and add it to the renderer.
     ///
     /// Returns the index of the loaded model.
+    #[allow(dead_code)]
     pub fn load_model_from_bytes(&mut self, bytes: &[u8], label: &str) -> Result<usize> {
         let model = Model::from_glb(
             &self.device,
@@ -342,6 +422,7 @@ impl Renderer {
     }
 
     /// Set the transform of a model.
+    #[allow(dead_code)]
     pub fn set_model_transform(&mut self, index: usize, transform: glam::Mat4) {
         if let Some(model) = self.models.get_mut(index) {
             model.set_transform(&self.queue, transform);
@@ -478,12 +559,17 @@ impl Renderer {
             skybox.draw(&mut pass, &self.camera_bind_group);
         }
 
-        // Draw basic colored geometry (legacy cube)
-        pass.set_pipeline(&self.basic_pipeline);
-        pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        // Draw static geometry (ground, platforms)
+        if !self.static_meshes.is_empty() {
+            pass.set_pipeline(&self.player_cube_pipeline);
+            for mesh in &self.static_meshes {
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &mesh.transform_bind_group, &[]);
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+            }
+        }
 
         // Draw textured models
         if !self.models.is_empty() {

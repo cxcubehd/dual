@@ -2,6 +2,8 @@
 //!
 //! Provides `Model`, `Mesh`, and `Material` abstractions for loading and rendering 3D models.
 
+#![allow(dead_code)]
+
 use std::ops::Range;
 
 use anyhow::{Context, Result};

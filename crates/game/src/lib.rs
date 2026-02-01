@@ -15,7 +15,7 @@ pub use net::{
     DEFAULT_TICK_RATE, EntityState, NetworkEndpoint, NetworkStats, Packet, PacketError,
     PacketHeader, PacketLossSimulation, PacketType, Reliability, WorldSnapshot,
 };
-pub use physics::{PhysicsHistory, PhysicsSnapshot, PhysicsSync, PhysicsWorld};
+pub use physics::{PhysicsHandle, PhysicsHistory, PhysicsSnapshot, PhysicsSync, PhysicsWorld};
 pub use player::{PlayerConfig, PlayerController, PlayerState};
 pub use simulation::{
     CommandBuffer, CommandProcessor, FixedTimestep, SimulationLoop, SimulationState,

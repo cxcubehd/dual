@@ -8,14 +8,13 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 
 use dual::{
-    ClientCommand, ConnectionManager, ConnectionState, EntityHandle, NetworkEndpoint, NetworkStats,
-    Packet, PacketHeader, PacketLossSimulation, PacketType, Reliability, SnapshotBuffer, World,
-    WorldSnapshot,
+    ClientCommand, CommandProcessor, ConnectionManager, ConnectionState, EntityHandle,
+    NetworkEndpoint, NetworkStats, Packet, PacketHeader, PacketLossSimulation, PacketType,
+    PhysicsSync, PhysicsWorld, Reliability, SnapshotBuffer, TestingGround, World, WorldSnapshot,
 };
 
 use crate::config::ServerConfig;
 use crate::events::{DisconnectReason, ServerEvent};
-use crate::simulation::{apply_command, simulate_world};
 
 #[derive(Debug)]
 struct QueuedCommand {
@@ -55,6 +54,8 @@ pub struct GameServer {
     connections: ConnectionManager,
     config: ServerConfig,
     world: World,
+    physics: PhysicsWorld,
+    command_processor: CommandProcessor,
     snapshot_history: SnapshotBuffer,
     command_queue: VecDeque<QueuedCommand>,
     delayed_packets: BinaryHeap<DelayedPacket>,
@@ -79,10 +80,18 @@ impl GameServer {
             addr: endpoint.local_addr(),
         });
 
+        let mut world = World::new();
+        let mut physics = PhysicsWorld::new();
+
+        let mut testing_ground = TestingGround::new();
+        testing_ground.spawn(&mut world, &mut physics);
+
         Ok(Self {
             endpoint,
             connections: ConnectionManager::new(config.max_clients),
-            world: World::new(),
+            world,
+            physics,
+            command_processor: CommandProcessor::new(),
             snapshot_history: SnapshotBuffer::new(config.snapshot_buffer_size),
             command_queue: VecDeque::new(),
             delayed_packets: BinaryHeap::new(),
@@ -226,8 +235,8 @@ impl GameServer {
     fn tick(&mut self) {
         self.process_commands();
 
-        let dt = 1.0 / self.config.tick_rate as f32;
-        simulate_world(&mut self.world, dt);
+        self.physics.step();
+        PhysicsSync::sync_physics_to_world(&self.physics, &mut self.world);
 
         self.world.advance_tick();
         self.tick = self.world.tick();
@@ -250,8 +259,6 @@ impl GameServer {
     }
 
     fn process_commands(&mut self) {
-        let dt = 1.0 / self.config.tick_rate as f32;
-
         while let Some(queued) = self.command_queue.pop_front() {
             if let Some(client) = self.connections.get_mut(queued.client_id) {
                 if queued.command.command_sequence > client.last_command_ack {
@@ -260,7 +267,11 @@ impl GameServer {
 
                 if let Some(entity_id) = client.entity_id {
                     if let Some(entity) = self.world.get_by_id_mut(entity_id) {
-                        apply_command(entity, &queued.command, dt);
+                        self.command_processor.process(
+                            &queued.command,
+                            entity,
+                            &mut self.physics,
+                        );
                     }
                 }
             }
@@ -472,8 +483,22 @@ impl GameServer {
         client.state = ConnectionState::Connected;
         let client_id = client.client_id;
 
-        let entity_handle = self.world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
+        // Spawn player higher to account for testing ground platforms
+        let spawn_pos = Vec3::new(0.0, 2.0, 0.0);
+        let entity_handle = self.world.spawn_player(spawn_pos);
         let entity_id = entity_handle.id();
+        
+        // Create physics body for the player using config values
+        let config = self.command_processor.config();
+        if let Some(entity) = self.world.get_by_id_mut(entity_id) {
+            PhysicsSync::create_physics_body(
+                entity, 
+                &mut self.physics, 
+                config.player_radius, 
+                config.player_height,
+            );
+        }
+        
         client.entity_id = Some(entity_id);
 
         self.pending_events.push_back(ServerEvent::ClientConnected {

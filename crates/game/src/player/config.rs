@@ -99,7 +99,9 @@ impl Default for PlayerConfig {
 
             player_radius: 0.3,
             player_height: 1.8,
-            ground_check_threshold: 0.15,
+            // Ground check threshold: must be > player_height/2 to reach ground from center
+            // For height 1.8, half = 0.9, so we use 0.9 + small margin
+            ground_check_threshold: 1.0,
         }
     }
 }

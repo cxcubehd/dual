@@ -142,6 +142,28 @@ impl TestingGround {
             }
         }
     }
+    
+    /// Spawn only physics colliders without creating world entities.
+    /// Used for client-side prediction where we only need collision geometry.
+    pub fn spawn_physics_only(physics: &mut PhysicsWorld) {
+        let ground = Self::new();
+        
+        for object in &ground.objects {
+            match object.kind {
+                MapObjectKind::Ground => {
+                    physics.add_ground(object.position.y, object.half_extents.x);
+                }
+                MapObjectKind::StaticBox => {
+                    physics.add_static_box(object.position, object.half_extents);
+                }
+                MapObjectKind::DynamicBox => {
+                    // For prediction, we treat dynamic props as static colliders
+                    // since we can't simulate their full physics state locally
+                    physics.add_static_box(object.position, object.half_extents);
+                }
+            }
+        }
+    }
 
     pub fn dynamic_entity_handles(&self) -> Vec<EntityHandle> {
         self.objects

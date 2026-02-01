@@ -20,6 +20,7 @@ struct MovementParams {
     acceleration: f32,
     deceleration: f32,
     max_speed: f32,
+    #[allow(dead_code)]
     crouch_factor: f32,
 }
 

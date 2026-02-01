@@ -1,7 +1,6 @@
 mod config;
 mod events;
 mod server;
-mod simulation;
 mod tui;
 
 use std::io;
