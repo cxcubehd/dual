@@ -111,7 +111,7 @@ impl Default for PlayerConfig {
             player_height: 1.8,
             ground_check_threshold: 1.0,
 
-            coyote_time: 0.1,
+            coyote_time: 0.05,
         }
     }
 }

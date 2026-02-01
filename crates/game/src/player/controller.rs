@@ -8,6 +8,8 @@ use crate::snapshot::Entity;
 
 use super::{PlayerConfig, PlayerState};
 
+const PITCH_LIMIT: f32 = 89.9999_f32.to_radians();
+
 struct MovementInput {
     world_direction: Vec3,
     is_active: bool,
@@ -134,6 +136,8 @@ impl PlayerController {
     fn parse_input(&self, command: &ClientCommand) -> MovementInput {
         let move_dir = command.decode_move_direction();
         let (yaw, pitch) = command.decode_view_angles();
+        let pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+
         let local_input = Vec3::new(move_dir[0], 0.0, move_dir[2]);
         let world_direction = self.local_to_world_direction(local_input, yaw);
 
