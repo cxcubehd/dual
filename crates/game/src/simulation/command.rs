@@ -159,9 +159,9 @@ mod tests {
     fn command_buffer_ordering() {
         let mut buffer = CommandBuffer::new(64);
 
-        let mut cmd1 = ClientCommand::new(5, 1);
-        let mut cmd2 = ClientCommand::new(3, 2);
-        let mut cmd3 = ClientCommand::new(10, 3);
+        let cmd1 = ClientCommand::new(5, 1);
+        let cmd2 = ClientCommand::new(3, 2);
+        let cmd3 = ClientCommand::new(10, 3);
 
         buffer.push(1, cmd2.clone());
         buffer.push(1, cmd1.clone());
