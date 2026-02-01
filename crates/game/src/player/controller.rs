@@ -11,6 +11,7 @@ struct MovementInput {
     is_active: bool,
     wants_jump: bool,
     jump_just_pressed: bool,
+    jump_held: bool,
     is_crouching: bool,
     yaw: f32,
     pitch: f32,
@@ -59,12 +60,13 @@ impl PlayerController {
         let current_velocity = physics.body_velocity(handle).unwrap_or(Vec3::ZERO);
         let input = self.parse_input(command, state);
 
-        state.crouch_amount = if input.is_crouching { 1.0 } else { 0.0 };
+        self.tick_crouch(state, &input, dt);
         self.tick_strafe_ground_time(state, grounded, dt);
 
         let velocity = self.compute_velocity(current_velocity, &input, grounded, state, dt);
 
         physics.set_body_velocity(handle, velocity);
+        self.update_crouch_collider(handle, physics, state);
         self.tick_stun(state, grounded, dt);
 
         state.last_grounded = grounded;
@@ -81,12 +83,14 @@ impl PlayerController {
         let local_input = Vec3::new(move_dir[0], 0.0, move_dir[2]);
         let world_direction = self.local_to_world_direction(local_input, yaw);
         let wants_jump = command.has_flag(ClientCommand::FLAG_JUMP);
+        let jump_held = command.has_flag(ClientCommand::FLAG_JUMP_HELD);
 
         MovementInput {
             world_direction,
             is_active: world_direction.length_squared() > 0.001,
             wants_jump,
             jump_just_pressed: wants_jump && !state.jump_held_last_frame,
+            jump_held,
             is_crouching: command.has_flag(ClientCommand::FLAG_CROUCH),
             yaw,
             pitch,
@@ -119,7 +123,7 @@ impl PlayerController {
         let mut velocity = current;
 
         if !grounded {
-            velocity = self.apply_gravity(velocity, input.wants_jump, dt);
+            velocity = self.apply_gravity(velocity, input.jump_held, dt);
         }
 
         if input.jump_just_pressed && grounded {
@@ -390,6 +394,33 @@ impl PlayerController {
             1.0
         };
         state.stunned_duration = (state.stunned_duration - dt * decay_rate).max(0.0);
+    }
+
+    fn tick_crouch(&self, state: &mut PlayerState, input: &MovementInput, dt: f32) {
+        state.crouch_target = if input.is_crouching { 1.0 } else { 0.0 };
+
+        let (rate, target) = if state.crouch_target > state.crouch_amount {
+            (1.0 / self.config.crouch_time_down, state.crouch_target)
+        } else {
+            (1.0 / self.config.crouch_time_up, state.crouch_target)
+        };
+
+        let diff = target - state.crouch_amount;
+        let max_change = rate * dt;
+        state.crouch_amount += diff.clamp(-max_change, max_change);
+    }
+
+    fn update_crouch_collider(
+        &self,
+        handle: rapier3d::dynamics::RigidBodyHandle,
+        physics: &mut PhysicsWorld,
+        state: &PlayerState,
+    ) {
+        let standing_height = self.config.player_height;
+        let crouched_height = standing_height * self.config.crouch_height_factor;
+        let current_height = lerp(standing_height, crouched_height, state.crouch_amount);
+
+        physics.set_player_height(handle, current_height, self.config.player_radius);
     }
 }
 

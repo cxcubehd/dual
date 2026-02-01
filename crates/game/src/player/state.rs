@@ -5,6 +5,7 @@ pub struct PlayerState {
     pub strafe_ground_time: f32,
     pub stunned_duration: f32,
     pub crouch_amount: f32,
+    pub crouch_target: f32,
     pub deferred_impulse_set: Option<Vec3>,
     pub deferred_impulse_add: Vec3,
     pub last_grounded: bool,

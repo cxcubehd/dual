@@ -204,6 +204,23 @@ impl PhysicsWorld {
         })
     }
 
+    pub fn set_player_height(&mut self, handle: RigidBodyHandle, height: Real, radius: Real) {
+        let Some(body) = self.bodies.get(handle) else {
+            return;
+        };
+
+        let collider_handles: Vec<_> = body.colliders().to_vec();
+        for collider_handle in collider_handles {
+            if let Some(collider) = self.colliders.get_mut(collider_handle) {
+                let capsule_half_height = (height - 2.0 * radius).max(0.0) / 2.0;
+                collider.set_shape(rapier3d::geometry::SharedShape::capsule_y(
+                    capsule_half_height,
+                    radius,
+                ));
+            }
+        }
+    }
+
     fn query_pipeline(&self) -> QueryPipeline<'_> {
         self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),

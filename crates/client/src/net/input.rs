@@ -7,6 +7,7 @@ pub struct InputState {
     pub view_pitch: f32,
     pub sprint: bool,
     pub jump: bool,
+    pub jump_held: bool,
     pub crouch: bool,
     pub fire1: bool,
     pub fire2: bool,
@@ -25,6 +26,9 @@ impl InputState {
         }
         if self.jump {
             cmd.set_flag(ClientCommand::FLAG_JUMP, true);
+        }
+        if self.jump_held {
+            cmd.set_flag(ClientCommand::FLAG_JUMP_HELD, true);
         }
         if self.crouch {
             cmd.set_flag(ClientCommand::FLAG_CROUCH, true);
@@ -58,6 +62,7 @@ mod tests {
             view_pitch: 0.0,
             sprint: true,
             jump: false,
+            jump_held: false,
             crouch: false,
             fire1: true,
             fire2: false,

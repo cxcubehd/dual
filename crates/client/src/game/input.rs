@@ -8,6 +8,7 @@ use crate::net::InputState;
 pub struct Input {
     keys_held: HashSet<KeyCode>,
     mouse_delta: (f64, f64),
+    scroll_jump_pending: bool,
     pub cursor_captured: bool,
 }
 
@@ -56,9 +57,10 @@ impl Input {
             view_yaw: yaw,
             view_pitch: pitch,
             sprint: self.is_shift_held(),
-            jump: self.is_jump_held(),
+            jump: self.is_jump_held() || self.scroll_jump_pending,
+            jump_held: self.is_jump_held(),
             crouch: self.is_crouch_held(),
-            fire1: false, // TODO: wire up mouse buttons
+            fire1: false,
             fire2: false,
             use_key: self.is_key_held(KeyCode::KeyE),
             reload: self.is_key_held(KeyCode::KeyR),
@@ -116,5 +118,13 @@ impl Input {
 
     pub fn consume_mouse_delta(&mut self) -> (f64, f64) {
         std::mem::take(&mut self.mouse_delta)
+    }
+
+    pub fn trigger_scroll_jump(&mut self) {
+        self.scroll_jump_pending = true;
+    }
+
+    pub fn consume_scroll_jump(&mut self) -> bool {
+        std::mem::take(&mut self.scroll_jump_pending)
     }
 }

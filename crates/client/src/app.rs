@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dual::ConnectionState;
 use glam::{Mat4, Vec3};
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -28,6 +28,7 @@ pub struct App {
     fullscreen: bool,
     state: AppState,
     player_cube_indices: Vec<usize>,
+    dynamic_prop_indices: Vec<usize>,
 }
 
 impl Default for App {
@@ -47,6 +48,7 @@ impl App {
             fullscreen: false,
             state: AppState::Playing,
             player_cube_indices: Vec::new(),
+            dynamic_prop_indices: Vec::new(),
         }
     }
 
@@ -60,6 +62,7 @@ impl App {
             fullscreen: false,
             state: AppState::Playing,
             player_cube_indices: Vec::new(),
+            dynamic_prop_indices: Vec::new(),
         }
     }
 
@@ -196,6 +199,7 @@ impl App {
             let input_state = game
                 .input
                 .to_net_input(game.camera.yaw as f32, game.camera.pitch as f32);
+            game.input.consume_scroll_jump();
 
             if let Err(e) = client.update(dt, Some(&input_state)) {
                 log::error!("Network error: {}", e);
@@ -211,6 +215,7 @@ impl App {
             game.camera.position = client.predicted_position();
 
             Self::update_player_cubes(&mut self.player_cube_indices, client, renderer);
+            Self::update_dynamic_props(&mut self.dynamic_prop_indices, client, renderer);
         }
 
         renderer.update_camera(&game.camera);
@@ -270,6 +275,41 @@ impl App {
             }
         }
     }
+
+    fn update_dynamic_props(
+        prop_indices: &mut Vec<usize>,
+        client: &NetworkClient,
+        renderer: &mut Renderer,
+    ) {
+        let entities: Vec<_> = client
+            .entities()
+            .filter(|e| e.entity_type == dual::EntityType::DynamicProp)
+            .collect();
+
+        while prop_indices.len() < entities.len() {
+            if let Ok(idx) = renderer.add_player_cube() {
+                prop_indices.push(idx);
+            } else {
+                break;
+            }
+        }
+
+        for (i, entity) in entities.iter().enumerate() {
+            if let Some(&cube_idx) = prop_indices.get(i) {
+                let transform = Mat4::from_translation(entity.position)
+                    * Mat4::from_quat(entity.orientation)
+                    * Mat4::from_scale(Vec3::splat(0.5));
+                renderer.set_player_cube_transform(cube_idx, transform);
+                renderer.set_player_cube_visible(cube_idx, true);
+            }
+        }
+
+        for i in entities.len()..prop_indices.len() {
+            if let Some(&cube_idx) = prop_indices.get(i) {
+                renderer.set_player_cube_visible(cube_idx, false);
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -318,6 +358,19 @@ impl ApplicationHandler for App {
                 let cursor_captured = self.game.as_ref().is_some_and(|g| g.input.cursor_captured);
                 if !cursor_captured {
                     self.set_cursor_captured(true);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(game) = &mut self.game {
+                    if game.input.cursor_captured {
+                        let scroll_up = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => y > 0.0,
+                            MouseScrollDelta::PixelDelta(pos) => pos.y > 0.0,
+                        };
+                        if scroll_up {
+                            game.input.trigger_scroll_jump();
+                        }
+                    }
                 }
             }
             WindowEvent::RedrawRequested => self.handle_redraw(event_loop),

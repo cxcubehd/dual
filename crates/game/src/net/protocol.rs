@@ -134,6 +134,7 @@ impl ClientCommand {
     pub const FLAG_FIRE2: u16 = 1 << 4;
     pub const FLAG_USE: u16 = 1 << 5;
     pub const FLAG_RELOAD: u16 = 1 << 6;
+    pub const FLAG_JUMP_HELD: u16 = 1 << 7;
 
     pub fn new(tick: u32, command_sequence: u32) -> Self {
         Self {

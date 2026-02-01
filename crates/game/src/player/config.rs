@@ -23,6 +23,10 @@ pub struct PlayerConfig {
 
     pub decelerate_crouch_ground_slow: f32,
 
+    pub crouch_time_down: f32,
+    pub crouch_time_up: f32,
+    pub crouch_height_factor: f32,
+
     pub strafe_air_acceleration: f32,
     pub strafe_air_limit: f32,
 
@@ -76,6 +80,10 @@ impl Default for PlayerConfig {
 
             decelerate_crouch_ground_slow: 3.0,
 
+            crouch_time_down: 0.15,
+            crouch_time_up: 0.2,
+            crouch_height_factor: 0.65,
+
             strafe_air_acceleration: 200.0,
             strafe_air_limit: 30.0,
 
@@ -99,8 +107,6 @@ impl Default for PlayerConfig {
 
             player_radius: 0.3,
             player_height: 1.8,
-            // Ground check threshold: must be > player_height/2 to reach ground from center
-            // For height 1.8, half = 0.9, so we use 0.9 + small margin
             ground_check_threshold: 1.0,
         }
     }
