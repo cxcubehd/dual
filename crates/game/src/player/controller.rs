@@ -63,10 +63,6 @@ impl PlayerController {
         state: &mut PlayerState,
         dt: f32,
     ) {
-        if dt < 1e-6 {
-            return;
-        }
-
         let Some(handle) = entity.physics_handle else {
             return;
         };
@@ -101,17 +97,21 @@ impl PlayerController {
         );
 
         state.grounded = corrected.grounded;
-        
-        let v = corrected.translation / dt;
-        state.velocity = Vec3::new(v.x, v.y, v.z);
 
-        if velocity.y <= 0.0 && state.velocity.y > 0.0 {
-            state.velocity.y = 0.0;
-        }
+        let horizontal_velocity = self.resolve_horizontal_velocity(
+            Vec3::new(velocity.x, 0.0, velocity.z),
+            Vec3::new(desired_translation.x, 0.0, desired_translation.z),
+            Vec3::new(corrected.translation.x, 0.0, corrected.translation.z),
+        );
 
-        if corrected.grounded && velocity.y <= 0.0 {
-            state.velocity.y = 0.0;
-        }
+        let vertical_velocity = self.resolve_vertical_velocity(
+            velocity.y,
+            desired_translation.y,
+            corrected.translation.y,
+            corrected.grounded,
+        );
+
+        state.velocity = Vec3::new(horizontal_velocity.x, vertical_velocity, horizontal_velocity.z);
 
         let current_pos = character_pos.translation;
         let new_position = current_pos + corrected.translation;
@@ -438,6 +438,49 @@ impl PlayerController {
             Vector::new(desired_translation.x, desired_translation.y, desired_translation.z),
             dt,
         )
+    }
+
+    fn resolve_horizontal_velocity(
+        &self,
+        velocity: Vec3,
+        desired: Vec3,
+        corrected: Vec3,
+    ) -> Vec3 {
+        let desired_length = desired.length();
+        if desired_length < 0.0001 {
+            return velocity;
+        }
+
+        let corrected_length = corrected.length();
+        let ratio = (corrected_length / desired_length).min(1.0);
+
+        velocity * ratio
+    }
+
+    fn resolve_vertical_velocity(
+        &self,
+        velocity: f32,
+        desired: f32,
+        corrected: f32,
+        grounded: bool,
+    ) -> f32 {
+        if grounded && velocity <= 0.0 {
+            return 0.0;
+        }
+
+        if velocity > 0.0 {
+            let blocked_upward = corrected < desired - 0.0001;
+            if blocked_upward {
+                return 0.0;
+            }
+            return velocity;
+        }
+
+        if corrected > desired + 0.0001 {
+            return 0.0;
+        }
+
+        velocity
     }
 
     fn handle_crouch_height_change(
