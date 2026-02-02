@@ -452,9 +452,14 @@ impl PlayerController {
         }
 
         let corrected_length = corrected.length();
-        let ratio = (corrected_length / desired_length).min(1.0);
+        if corrected_length < 0.0001 {
+            return Vec3::ZERO;
+        }
 
-        velocity * ratio
+        let corrected_dir = corrected / corrected_length;
+        let projected_speed = velocity.dot(corrected_dir);
+
+        corrected_dir * projected_speed.max(0.0)
     }
 
     fn resolve_vertical_velocity(
