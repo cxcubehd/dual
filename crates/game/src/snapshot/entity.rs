@@ -46,6 +46,8 @@ pub struct Entity {
     pub position: Vec3,
     pub velocity: Vec3,
     pub orientation: Quat,
+    pub scale: Vec3,
+    pub shape: u8, // 0 = Box, 1 = Sphere
     pub physics_handle: Option<RigidBodyHandle>,
     pub animation_state: u8,
     pub animation_time: f32,
@@ -61,6 +63,8 @@ impl Entity {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             orientation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            shape: 0,
             physics_handle: None,
             animation_state: 0,
             animation_time: 0.0,
@@ -76,6 +80,8 @@ impl Entity {
             position: spawn_position,
             velocity: Vec3::ZERO,
             orientation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            shape: 0,
             physics_handle: None,
             animation_state: 0,
             animation_time: 0.0,
@@ -98,6 +104,8 @@ impl Entity {
             self.orientation.z,
             self.orientation.w,
         ]);
+        state.encode_scale(self.scale.into());
+        state.shape = self.shape;
         state.animation_state = self.animation_state;
         state.animation_frame = (self.animation_time.fract() * 255.0) as u8;
         state.flags = self.flags;
@@ -107,6 +115,7 @@ impl Entity {
     pub fn from_network_state(state: &EntityState) -> Self {
         let vel = state.decode_velocity();
         let quat = state.decode_orientation();
+        let scale = state.decode_scale();
 
         Self {
             id: state.entity_id,
@@ -114,6 +123,8 @@ impl Entity {
             position: Vec3::from(state.position),
             velocity: Vec3::from(vel),
             orientation: Quat::from_xyzw(quat[0], quat[1], quat[2], quat[3]).normalize(),
+            scale: Vec3::from(scale),
+            shape: state.shape,
             physics_handle: None,
             animation_state: state.animation_state,
             animation_time: state.animation_frame as f32 / 255.0,
@@ -132,6 +143,7 @@ mod tests {
         let mut entity = Entity::player(42, Vec3::new(10.0, 5.0, -3.0));
         entity.velocity = Vec3::new(2.5, -1.0, 0.5);
         entity.orientation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
+        entity.scale = Vec3::new(0.5, 2.0, 0.5);
 
         let network_state = entity.to_network_state();
         let reconstructed = Entity::from_network_state(&network_state);
@@ -139,5 +151,6 @@ mod tests {
         assert_eq!(entity.id, reconstructed.id);
         assert!((entity.position - reconstructed.position).length() < 0.001);
         assert!((entity.velocity - reconstructed.velocity).length() < 0.02);
+        assert!((entity.scale - reconstructed.scale).length() < 0.02);
     }
 }

@@ -5,6 +5,7 @@ pub enum MapObjectKind {
     Ground,
     StaticBox,
     DynamicBox,
+    DynamicSphere,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +48,20 @@ impl MapObject {
         }
     }
 
+    pub fn dynamic_sphere(position: Vec3, radius: f32, mass: f32) -> Self {
+        Self {
+            kind: MapObjectKind::DynamicSphere,
+            position,
+            half_extents: Vec3::splat(radius), // Store radius in half_extents
+            mass: Some(mass),
+            entity_id: None,
+        }
+    }
+
     pub fn is_dynamic(&self) -> bool {
-        matches!(self.kind, MapObjectKind::DynamicBox)
+        matches!(
+            self.kind,
+            MapObjectKind::DynamicBox | MapObjectKind::DynamicSphere
+        )
     }
 }

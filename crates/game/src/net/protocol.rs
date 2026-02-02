@@ -200,6 +200,8 @@ pub struct EntityState {
     pub animation_state: u8,
     pub animation_frame: u8,
     pub flags: u16,
+    pub scale: [u8; 3],
+    pub shape: u8,
 }
 
 impl EntityState {
@@ -215,6 +217,8 @@ impl EntityState {
             animation_state: 0,
             animation_frame: 0,
             flags: 0,
+            scale: [50, 50, 50], // Default scale 1.0 (50/50 is 1.0)
+            shape: 0,
         }
     }
 
@@ -249,6 +253,22 @@ impl EntityState {
             self.orientation[1] as f32 / 32767.0,
             self.orientation[2] as f32 / 32767.0,
             self.orientation[3] as f32 / 32767.0,
+        ]
+    }
+
+    pub fn encode_scale(&mut self, scale: [f32; 3]) {
+        self.scale = [
+            (scale[0].clamp(0.0, 5.0) * 50.0) as u8,
+            (scale[1].clamp(0.0, 5.0) * 50.0) as u8,
+            (scale[2].clamp(0.0, 5.0) * 50.0) as u8,
+        ];
+    }
+
+    pub fn decode_scale(&self) -> [f32; 3] {
+        [
+            self.scale[0] as f32 / 50.0,
+            self.scale[1] as f32 / 50.0,
+            self.scale[2] as f32 / 50.0,
         ]
     }
 }

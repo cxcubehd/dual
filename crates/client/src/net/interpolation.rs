@@ -36,6 +36,8 @@ pub struct InterpolatedEntity {
     pub position: Vec3,
     pub velocity: Vec3,
     pub orientation: Quat,
+    pub scale: Vec3,
+    pub shape: u8,
     pub animation_state: u8,
     pub animation_time: f32,
     pub flags: u16,
@@ -49,6 +51,8 @@ impl From<&Entity> for InterpolatedEntity {
             position: entity.position,
             velocity: entity.velocity,
             orientation: entity.orientation,
+            scale: entity.scale,
+            shape: entity.shape,
             animation_state: entity.animation_state,
             animation_time: entity.animation_time,
             flags: entity.flags,
@@ -388,12 +392,18 @@ fn interpolate_entity_states(from: &EntityState, to: &EntityState, t: f32) -> In
     let to_anim = to.animation_frame as f32 / 255.0;
     let animation_time = lerp_wrapped(from_anim, to_anim, t);
 
+    let from_scale = Vec3::from(from.decode_scale());
+    let to_scale = Vec3::from(to.decode_scale());
+    let scale = from_scale.lerp(to_scale, t);
+
     InterpolatedEntity {
         id: from.entity_id,
         entity_type: EntityType::from(from.entity_type),
         position,
         velocity,
         orientation,
+        scale,
+        shape: if t < 0.5 { from.shape } else { to.shape },
         animation_state: if t < 0.5 {
             from.animation_state
         } else {

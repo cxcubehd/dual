@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dual::ConnectionState;
@@ -19,6 +20,12 @@ pub enum AppState {
     Disconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropType {
+    Cube,
+    Sphere,
+}
+
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -28,7 +35,10 @@ pub struct App {
     fullscreen: bool,
     state: AppState,
     player_cube_indices: Vec<usize>,
-    dynamic_prop_indices: Vec<usize>,
+    // Dynamic prop management
+    prop_visuals: HashMap<u32, (PropType, usize)>,
+    free_cubes: Vec<usize>,
+    free_spheres: Vec<usize>,
 }
 
 impl Default for App {
@@ -48,7 +58,9 @@ impl App {
             fullscreen: false,
             state: AppState::Playing,
             player_cube_indices: Vec::new(),
-            dynamic_prop_indices: Vec::new(),
+            prop_visuals: HashMap::new(),
+            free_cubes: Vec::new(),
+            free_spheres: Vec::new(),
         }
     }
 
@@ -62,7 +74,9 @@ impl App {
             fullscreen: false,
             state: AppState::Playing,
             player_cube_indices: Vec::new(),
-            dynamic_prop_indices: Vec::new(),
+            prop_visuals: HashMap::new(),
+            free_cubes: Vec::new(),
+            free_spheres: Vec::new(),
         }
     }
 
@@ -221,7 +235,14 @@ impl App {
             game.camera.position = client.predicted_position();
 
             Self::update_player_cubes(&mut self.player_cube_indices, client, renderer);
-            Self::update_dynamic_props(&mut self.dynamic_prop_indices, client, renderer);
+            Self::update_player_cubes(&mut self.player_cube_indices, client, renderer);
+            Self::update_dynamic_props(
+                &mut self.prop_visuals,
+                &mut self.free_cubes,
+                &mut self.free_spheres,
+                client,
+                renderer,
+            );
         }
 
         renderer.update_camera(&game.camera);
@@ -283,7 +304,9 @@ impl App {
     }
 
     fn update_dynamic_props(
-        prop_indices: &mut Vec<usize>,
+        prop_visuals: &mut HashMap<u32, (PropType, usize)>,
+        free_cubes: &mut Vec<usize>,
+        free_spheres: &mut Vec<usize>,
         client: &NetworkClient,
         renderer: &mut Renderer,
     ) {
@@ -292,27 +315,102 @@ impl App {
             .filter(|e| e.entity_type == dual::EntityType::DynamicProp)
             .collect();
 
-        while prop_indices.len() < entities.len() {
-            if let Ok(idx) = renderer.add_player_cube() {
-                prop_indices.push(idx);
+        let mut current_ids = HashSet::new();
+
+        for entity in &entities {
+            current_ids.insert(entity.id);
+            let required_type = if entity.shape == 1 {
+                PropType::Sphere
             } else {
-                break;
+                PropType::Cube
+            };
+
+            // Check if we have a visual for this entity
+            let (visual_type, visual_idx) =
+                if let Some(&(v_type, v_idx)) = prop_visuals.get(&entity.id) {
+                    if v_type == required_type {
+                        (v_type, v_idx)
+                    } else {
+                        // Type mismatch (should be rare), release old and allocate new
+                        match v_type {
+                            PropType::Cube => {
+                                renderer.set_prop_cube_visible(v_idx, false);
+                                free_cubes.push(v_idx);
+                            }
+                            PropType::Sphere => {
+                                renderer.set_prop_sphere_visible(v_idx, false);
+                                free_spheres.push(v_idx);
+                            }
+                        }
+                        Self::allocate_visual(required_type, renderer, free_cubes, free_spheres)
+                    }
+                } else {
+                    // New entity, allocate visual
+                    Self::allocate_visual(required_type, renderer, free_cubes, free_spheres)
+                };
+
+            // Update map
+            prop_visuals.insert(entity.id, (visual_type, visual_idx));
+
+            // Update transform
+            let transform = Mat4::from_translation(entity.position)
+                * Mat4::from_quat(entity.orientation)
+                * Mat4::from_scale(entity.scale);
+
+            match visual_type {
+                PropType::Cube => {
+                    renderer.set_prop_cube_transform(visual_idx, transform);
+                    renderer.set_prop_cube_visible(visual_idx, true);
+                }
+                PropType::Sphere => {
+                    renderer.set_prop_sphere_transform(visual_idx, transform);
+                    renderer.set_prop_sphere_visible(visual_idx, true);
+                }
             }
         }
 
-        for (i, entity) in entities.iter().enumerate() {
-            if let Some(&cube_idx) = prop_indices.get(i) {
-                let transform = Mat4::from_translation(entity.position)
-                    * Mat4::from_quat(entity.orientation)
-                    * Mat4::from_scale(Vec3::splat(0.5));
-                renderer.set_player_cube_transform(cube_idx, transform);
-                renderer.set_player_cube_visible(cube_idx, true);
+        // Cleanup removed entities
+        prop_visuals.retain(|id, (v_type, v_idx)| {
+            if !current_ids.contains(id) {
+                match v_type {
+                    PropType::Cube => {
+                        renderer.set_prop_cube_visible(*v_idx, false);
+                        free_cubes.push(*v_idx);
+                    }
+                    PropType::Sphere => {
+                        renderer.set_prop_sphere_visible(*v_idx, false);
+                        free_spheres.push(*v_idx);
+                    }
+                }
+                false
+            } else {
+                true
             }
-        }
+        });
+    }
 
-        for i in entities.len()..prop_indices.len() {
-            if let Some(&cube_idx) = prop_indices.get(i) {
-                renderer.set_player_cube_visible(cube_idx, false);
+    fn allocate_visual(
+        required_type: PropType,
+        renderer: &mut Renderer,
+        free_cubes: &mut Vec<usize>,
+        free_spheres: &mut Vec<usize>,
+    ) -> (PropType, usize) {
+        match required_type {
+            PropType::Cube => {
+                if let Some(idx) = free_cubes.pop() {
+                    (PropType::Cube, idx)
+                } else {
+                    let idx = renderer.add_prop_cube().unwrap_or(0);
+                    (PropType::Cube, idx)
+                }
+            }
+            PropType::Sphere => {
+                if let Some(idx) = free_spheres.pop() {
+                    (PropType::Sphere, idx)
+                } else {
+                    let idx = renderer.add_prop_sphere().unwrap_or(0);
+                    (PropType::Sphere, idx)
+                }
             }
         }
     }

@@ -1,10 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use glam::{Quat, Vec3};
 
 use dual::{
-    ClientCommand, Entity, EntityType, PhysicsHandle, PhysicsWorld, PlayerConfig, PlayerController,
-    PlayerState, TestingGround,
+    ClientCommand, Entity, EntityState, EntityType, PhysicsHandle, PhysicsWorld, PlayerConfig,
+    PlayerController, PlayerState, TestingGround, WorldSnapshot,
 };
 
 const MAX_PENDING_COMMANDS: usize = 128;
@@ -33,6 +33,7 @@ pub struct ClientPrediction {
     controller: PlayerController,
     player_state: PlayerState,
     player_handle: Option<PhysicsHandle>,
+    prop_handles: HashMap<u32, PhysicsHandle>,
     dt: f32,
 }
 
@@ -56,6 +57,7 @@ impl ClientPrediction {
             controller: PlayerController::new(PlayerConfig::default()),
             player_state: PlayerState::default(),
             player_handle: None,
+            prop_handles: HashMap::new(),
             dt,
         }
     }
@@ -85,8 +87,10 @@ impl ClientPrediction {
             entity_type: EntityType::Player,
             position: self.position,
             velocity: Vec3::ZERO,
-            orientation: self.orientation,
-            physics_handle: self.player_handle,
+            orientation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            shape: 0,
+            physics_handle: None,
             animation_state: 0,
             animation_time: 0.0,
             flags: 0,
@@ -226,7 +230,18 @@ impl ClientPrediction {
         self.orientation = Quat::IDENTITY;
         self.position_error = Vec3::ZERO;
         self.last_acked_sequence = 0;
+        self.last_acked_sequence = 0;
         self.player_state = PlayerState::default();
+
+        // Reset prop handles map but physics world is cleared below?
+        // Wait, PhysicsWorld::new() was called in new().
+        // If we reset, we might want to clear physics world or just reset player.
+        // Actually reset() didn't clear physics before.
+        // We should clear props from physics world on reset.
+        for handle in self.prop_handles.values() {
+            self.physics.remove_body(*handle);
+        }
+        self.prop_handles.clear();
 
         // Reset physics body position
         if let Some(handle) = self.player_handle {
@@ -237,6 +252,60 @@ impl ClientPrediction {
     pub fn pending_command_count(&self) -> usize {
         self.pending_commands.len()
     }
+
+    pub fn sync_props(&mut self, snapshot: &WorldSnapshot) {
+        use std::collections::HashSet;
+
+        let mut active_prop_ids = HashSet::new();
+
+        for state in &snapshot.entities {
+            if state.entity_type != EntityType::DynamicProp as u8 {
+                continue;
+            }
+
+            active_prop_ids.insert(state.entity_id);
+
+            let position = Vec3::from(state.position);
+            let orientation = decode_orientation_quat(state.orientation);
+            let scale = Vec3::from(state.decode_scale());
+
+            if let Some(&handle) = self.prop_handles.get(&state.entity_id) {
+                // Update existing prop with next kinematic pose (velocity-based update for stability)
+                self.physics
+                    .set_next_kinematic_pose(handle, position, orientation);
+            } else {
+                // Create new prop (Kinematic for stability)
+                let handle = if state.shape == 1 {
+                    self.physics.add_kinematic_sphere(position, scale.x * 0.5)
+                } else {
+                    self.physics.add_kinematic_box(position, scale * 0.5)
+                };
+                self.prop_handles.insert(state.entity_id, handle);
+            }
+        }
+
+        // Cleanup removed props
+        self.prop_handles.retain(|id, handle| {
+            if !active_prop_ids.contains(id) {
+                self.physics.remove_body(*handle);
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+// Helper since decode_orientation in EntityState is specific
+// Helper function
+fn decode_orientation_quat(orientation: [i16; 4]) -> Quat {
+    let arr = [
+        orientation[0] as f32 / 32767.0,
+        orientation[1] as f32 / 32767.0,
+        orientation[2] as f32 / 32767.0,
+        orientation[3] as f32 / 32767.0,
+    ];
+    Quat::from_xyzw(arr[0], arr[1], arr[2], arr[3]).normalize()
 }
 
 #[cfg(test)]

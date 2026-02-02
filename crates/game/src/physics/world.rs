@@ -111,6 +111,20 @@ impl PhysicsWorld {
         self.bodies.insert(body)
     }
 
+    pub fn add_kinematic_box(&mut self, position: Vec3, half_extents: Vec3) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .translation(Vector::new(position.x, position.y, position.z))
+            .build();
+        let handle = self.bodies.insert(body);
+
+        let collider =
+            ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).build();
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.bodies);
+
+        handle
+    }
+
     pub fn add_static_box(&mut self, position: Vec3, half_extents: Vec3) -> ColliderHandle {
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .translation(Vector::new(position.x, position.y, position.z))
@@ -150,6 +164,52 @@ impl PhysicsWorld {
         handle
     }
 
+    pub fn add_dynamic_sphere(
+        &mut self,
+        position: Vec3,
+        radius: f32,
+        mass: f32,
+    ) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::dynamic()
+            .translation(Vector::new(position.x, position.y, position.z))
+            .ccd_enabled(true)
+            .build();
+        let handle = self.bodies.insert(body);
+        let collider = ColliderBuilder::ball(radius)
+            .mass(mass)
+            .friction(0.5)
+            .restitution(0.3)
+            .build();
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.bodies);
+        handle
+    }
+
+    pub fn add_kinematic_sphere(&mut self, position: Vec3, radius: f32) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::kinematic_position_based()
+            .translation(Vector::new(position.x, position.y, position.z))
+            .build();
+        let handle = self.bodies.insert(body);
+        let collider = ColliderBuilder::ball(radius).build();
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.bodies);
+        handle
+    }
+
+    pub fn set_next_kinematic_pose(
+        &mut self,
+        handle: RigidBodyHandle,
+        position: Vec3,
+        rotation: glam::Quat,
+    ) {
+        if let Some(body) = self.bodies.get_mut(handle) {
+            let rot =
+                Rotation::from_xyzw(rotation.x, rotation.y, rotation.z, rotation.w).normalize();
+            let new_pose = Pose::from_parts(Vector::new(position.x, position.y, position.z), rot);
+            body.set_next_kinematic_position(new_pose);
+        }
+    }
+
     pub fn remove_body(&mut self, handle: RigidBodyHandle) {
         self.bodies.remove(
             handle,
@@ -174,6 +234,15 @@ impl PhysicsWorld {
             let current_rot = *body.rotation();
             let new_pose =
                 Pose::from_parts(Vector::new(position.x, position.y, position.z), current_rot);
+            body.set_position(new_pose, true);
+        }
+    }
+
+    pub fn set_body_pose(&mut self, handle: RigidBodyHandle, position: Vec3, rotation: glam::Quat) {
+        if let Some(body) = self.bodies.get_mut(handle) {
+            let rot =
+                Rotation::from_xyzw(rotation.x, rotation.y, rotation.z, rotation.w).normalize();
+            let new_pose = Pose::from_parts(Vector::new(position.x, position.y, position.z), rot);
             body.set_position(new_pose, true);
         }
     }
@@ -213,7 +282,10 @@ impl PhysicsWorld {
         for collider_handle in collider_handles {
             if let Some(collider) = self.colliders.get_mut(collider_handle) {
                 let half_height = height / 2.0;
-                collider.set_shape(rapier3d::geometry::SharedShape::cylinder(half_height, radius));
+                collider.set_shape(rapier3d::geometry::SharedShape::cylinder(
+                    half_height,
+                    radius,
+                ));
             }
         }
     }

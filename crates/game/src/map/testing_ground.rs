@@ -109,6 +109,18 @@ impl TestingGround {
             Vec3::new(0.5, 0.5, 0.5),
             20.0,
         ));
+
+        objects.push(MapObject::dynamic_sphere(
+            Vec3::new(-2.0, 2.0, -2.0),
+            0.5,
+            5.0,
+        ));
+
+        objects.push(MapObject::dynamic_sphere(
+            Vec3::new(2.0, 2.0, -2.0),
+            0.75,
+            10.0,
+        ));
     }
 
     pub fn objects(&self) -> &[MapObject] {
@@ -130,10 +142,28 @@ impl TestingGround {
 
                     if let Some(entity) = world.get_mut(handle) {
                         entity.position = object.position;
+                        entity.scale = object.half_extents * 2.0;
 
                         let physics_handle = physics.add_dynamic_box(
                             object.position,
                             object.half_extents,
+                            object.mass.unwrap_or(1.0),
+                        );
+                        entity.physics_handle = Some(physics_handle);
+                    }
+                }
+                MapObjectKind::DynamicSphere => {
+                    let handle = world.spawn(EntityType::DynamicProp);
+                    object.entity_id = Some(handle.id());
+
+                    if let Some(entity) = world.get_mut(handle) {
+                        entity.position = object.position;
+                        entity.scale = object.half_extents * 2.0; // Use diameter for scale (half_extents has radius)
+                        entity.shape = 1; // 1 = Sphere
+
+                        let physics_handle = physics.add_dynamic_sphere(
+                            object.position,
+                            object.half_extents.x, // Radius
                             object.mass.unwrap_or(1.0),
                         );
                         entity.physics_handle = Some(physics_handle);
@@ -156,10 +186,8 @@ impl TestingGround {
                 MapObjectKind::StaticBox => {
                     physics.add_static_box(object.position, object.half_extents);
                 }
-                MapObjectKind::DynamicBox => {
-                    // For prediction, we treat dynamic props as static colliders
-                    // since we can't simulate their full physics state locally
-                    physics.add_static_box(object.position, object.half_extents);
+                MapObjectKind::DynamicBox | MapObjectKind::DynamicSphere => {
+                    // prediction now handles dynamic props sync from server
                 }
             }
         }

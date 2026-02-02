@@ -361,6 +361,7 @@ impl NetworkClient {
             }
         }
 
+        self.prediction.sync_props(&snapshot);
         self.interpolation.push_snapshot(snapshot);
 
         self.send_snapshot_ack(received_tick)?;

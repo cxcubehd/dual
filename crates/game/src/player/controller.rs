@@ -1,5 +1,7 @@
 use glam::Vec3;
-use rapier3d::control::{CharacterAutostep, CharacterLength, EffectiveCharacterMovement, KinematicCharacterController};
+use rapier3d::control::{
+    CharacterAutostep, CharacterLength, EffectiveCharacterMovement, KinematicCharacterController,
+};
 use rapier3d::prelude::*;
 
 use crate::net::ClientCommand;
@@ -52,7 +54,7 @@ impl PlayerController {
         controller.autostep = Some(CharacterAutostep {
             max_height: CharacterLength::Absolute(0.38),
             min_width: CharacterLength::Absolute(0.08),
-            include_dynamic_bodies: false,
+            include_dynamic_bodies: true,
         });
         controller
     }
@@ -118,11 +120,18 @@ impl PlayerController {
             corrected.grounded,
         );
 
-        state.velocity = Vec3::new(horizontal_velocity.x, vertical_velocity, horizontal_velocity.z);
+        state.velocity = Vec3::new(
+            horizontal_velocity.x,
+            vertical_velocity,
+            horizontal_velocity.z,
+        );
 
         let current_pos = character_pos.translation;
         let new_position = current_pos + corrected.translation;
-        physics.set_body_position(handle, Vec3::new(new_position.x, new_position.y, new_position.z));
+        physics.set_body_position(
+            handle,
+            Vec3::new(new_position.x, new_position.y, new_position.z),
+        );
 
         self.handle_crouch_height_change(physics, handle, state, current_height);
         self.tick_stun(state, grounded, dt);
@@ -262,22 +271,47 @@ impl PlayerController {
         let crouch = state.crouch_amount.clamp(0.0, 1.0);
         let params = self.movement_params(grounded, initial.length(), crouch);
         let target = self.calculate_target_velocity(initial, input, &params, state, dt);
-        let strafed = self.apply_strafe(initial, input.world_direction, target, grounded, state, dt);
+        let strafed =
+            self.apply_strafe(initial, input.world_direction, target, grounded, state, dt);
         self.apply_deceleration(strafed, target, input, grounded, &params, state, dt)
     }
 
     fn movement_params(&self, grounded: bool, current_speed: f32, crouch: f32) -> MovementParams {
         let (acceleration, mut deceleration, max_speed) = if grounded {
             (
-                lerp(self.config.accelerate_ground, self.config.accelerate_crouch_ground, crouch),
-                lerp(self.config.decelerate_ground, self.config.decelerate_crouch_ground, crouch),
-                lerp(self.config.move_speed_ground, self.config.move_speed_crouch_ground, crouch),
+                lerp(
+                    self.config.accelerate_ground,
+                    self.config.accelerate_crouch_ground,
+                    crouch,
+                ),
+                lerp(
+                    self.config.decelerate_ground,
+                    self.config.decelerate_crouch_ground,
+                    crouch,
+                ),
+                lerp(
+                    self.config.move_speed_ground,
+                    self.config.move_speed_crouch_ground,
+                    crouch,
+                ),
             )
         } else {
             (
-                lerp(self.config.accelerate_air, self.config.accelerate_crouch_air, crouch),
-                lerp(self.config.decelerate_air, self.config.decelerate_crouch_air, crouch),
-                lerp(self.config.move_speed_air, self.config.move_speed_crouch_air, crouch),
+                lerp(
+                    self.config.accelerate_air,
+                    self.config.accelerate_crouch_air,
+                    crouch,
+                ),
+                lerp(
+                    self.config.decelerate_air,
+                    self.config.decelerate_crouch_air,
+                    crouch,
+                ),
+                lerp(
+                    self.config.move_speed_air,
+                    self.config.move_speed_crouch_air,
+                    crouch,
+                ),
             )
         };
 
@@ -342,7 +376,11 @@ impl PlayerController {
         let initial_speed = initial.length();
         if initial_speed < 0.001 {
             let result = initial + move_dir * self.config.strafe_air_acceleration * dt;
-            return if result.length() < target.length() { target } else { result };
+            return if result.length() < target.length() {
+                target
+            } else {
+                result
+            };
         }
 
         let strafe_accel = self.config.strafe_air_acceleration * dt;
@@ -360,7 +398,11 @@ impl PlayerController {
             initial
         };
 
-        if result.length() < target.length() { target } else { result }
+        if result.length() < target.length() {
+            target
+        } else {
+            result
+        }
     }
 
     fn blend_ground_strafe(&self, velocity: Vec3, target: Vec3, state: &PlayerState) -> Vec3 {
@@ -385,7 +427,13 @@ impl PlayerController {
         state: &PlayerState,
         dt: f32,
     ) -> Vec3 {
-        let preserve = self.should_preserve_momentum(input, grounded, velocity.length(), target.length(), state);
+        let preserve = self.should_preserve_momentum(
+            input,
+            grounded,
+            velocity.length(),
+            target.length(),
+            state,
+        );
         if preserve && !state.is_stunned() {
             return velocity;
         }
@@ -442,17 +490,16 @@ impl PlayerController {
             handle,
             shape,
             position,
-            Vector::new(desired_translation.x, desired_translation.y, desired_translation.z),
+            Vector::new(
+                desired_translation.x,
+                desired_translation.y,
+                desired_translation.z,
+            ),
             dt,
         )
     }
 
-    fn resolve_horizontal_velocity(
-        &self,
-        velocity: Vec3,
-        desired: Vec3,
-        corrected: Vec3,
-    ) -> Vec3 {
+    fn resolve_horizontal_velocity(&self, velocity: Vec3, desired: Vec3, corrected: Vec3) -> Vec3 {
         let desired_length = desired.length();
         if desired_length < 0.0001 {
             return velocity;
@@ -531,14 +578,19 @@ impl PlayerController {
 
     fn tick_strafe_ground_time(&self, state: &mut PlayerState, grounded: bool, dt: f32) {
         if grounded {
-            state.strafe_ground_time = (state.strafe_ground_time + dt).min(self.config.strafe_ground_time_max);
+            state.strafe_ground_time =
+                (state.strafe_ground_time + dt).min(self.config.strafe_ground_time_max);
         } else {
             state.strafe_ground_time = 0.0;
         }
     }
 
     fn tick_stun(&self, state: &mut PlayerState, grounded: bool, dt: f32) {
-        let decay_rate = if grounded { self.config.stunned_delta_ground_factor } else { 1.0 };
+        let decay_rate = if grounded {
+            self.config.stunned_delta_ground_factor
+        } else {
+            1.0
+        };
         state.stunned_duration = (state.stunned_duration - dt * decay_rate).max(0.0);
     }
 }

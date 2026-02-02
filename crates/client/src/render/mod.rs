@@ -4,6 +4,7 @@ mod debug_overlay;
 mod menu_overlay;
 mod model;
 mod skybox;
+mod sphere;
 mod static_geometry;
 mod texture;
 mod vertex;
@@ -19,6 +20,7 @@ use camera::CameraUniform;
 use cube::{INDICES, VERTICES};
 use debug_overlay::DebugOverlay;
 use skybox::Skybox;
+use sphere::create_sphere_mesh;
 use static_geometry::StaticMesh;
 #[allow(unused_imports)]
 use vertex::Vertex;
@@ -89,8 +91,60 @@ const PLAYER_CUBE_VERTICES: &[Vertex] = &[
     },
 ];
 
+/// Orange cube vertices for physics prop representation
+const PROP_CUBE_VERTICES: &[Vertex] = &[
+    // Front face (orange)
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        color: [0.8, 0.4, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        color: [0.8, 0.4, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        color: [0.9, 0.5, 0.1],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        color: [0.9, 0.5, 0.1],
+    },
+    // Back face (darker orange)
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        color: [0.4, 0.2, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        color: [0.4, 0.2, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        color: [0.5, 0.25, 0.05],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        color: [0.5, 0.25, 0.05],
+    },
+];
+
 /// A player cube instance with its own transform
 struct PlayerCube {
+    transform_buffer: wgpu::Buffer,
+    transform_bind_group: wgpu::BindGroup,
+    visible: bool,
+}
+
+/// A prop cube instance with its own transform
+struct PropCube {
+    transform_buffer: wgpu::Buffer,
+    transform_bind_group: wgpu::BindGroup,
+    visible: bool,
+}
+
+/// A prop sphere instance with its own transform
+struct PropSphere {
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     visible: bool,
@@ -128,6 +182,14 @@ pub struct Renderer {
     player_cube_vertex_buffer: wgpu::Buffer,
     player_cube_index_buffer: wgpu::Buffer,
     player_cubes: Vec<PlayerCube>,
+    // Prop cubes
+    prop_cube_vertex_buffer: wgpu::Buffer,
+    prop_cubes: Vec<PropCube>,
+    // Prop spheres
+    prop_sphere_vertex_buffer: wgpu::Buffer,
+    prop_sphere_index_buffer: wgpu::Buffer,
+    prop_spheres: Vec<PropSphere>,
+    sphere_index_count: u32,
     // Static geometry (ground, platforms)
     static_meshes: Vec<StaticMesh>,
     // Skybox
@@ -226,6 +288,29 @@ impl Renderer {
                 usage: wgpu::BufferUsages::INDEX,
             });
 
+        let prop_cube_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Prop Cube Vertex Buffer"),
+                contents: vertex::vertices_as_bytes(PROP_CUBE_VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        // Initialize sphere mesh
+        let (sphere_vertices, sphere_indices) = create_sphere_mesh(0.5, 16, 16);
+        let prop_sphere_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Prop Sphere Vertex Buffer"),
+                contents: vertex::vertices_as_bytes(&sphere_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let prop_sphere_index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Prop Sphere Index Buffer"),
+                contents: indices_as_bytes(&sphere_indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let sphere_index_count = sphere_indices.len() as u32;
+
         let msaa_view = Self::create_msaa_view(&device, &config);
         let depth_view = Self::create_depth_view(&device, &config);
 
@@ -284,6 +369,12 @@ impl Renderer {
             player_cube_vertex_buffer,
             player_cube_index_buffer,
             player_cubes: Vec::new(),
+            prop_cube_vertex_buffer,
+            prop_cubes: Vec::new(),
+            prop_sphere_vertex_buffer,
+            prop_sphere_index_buffer,
+            prop_spheres: Vec::new(),
+            sphere_index_count,
             static_meshes,
             skybox,
             msaa_view,
@@ -516,6 +607,102 @@ impl Renderer {
         }
     }
 
+    /// Add a new prop cube and return its index.
+    pub fn add_prop_cube(&mut self) -> Result<usize> {
+        let transform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Prop Cube Transform Buffer"),
+                contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Prop Cube Transform Bind Group"),
+            layout: &self.model_transform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let prop_cube = PropCube {
+            transform_buffer,
+            transform_bind_group,
+            visible: false,
+        };
+
+        let index = self.prop_cubes.len();
+        self.prop_cubes.push(prop_cube);
+        Ok(index)
+    }
+
+    /// Set the transform of a prop cube.
+    pub fn set_prop_cube_transform(&mut self, index: usize, transform: Mat4) {
+        if let Some(cube) = self.prop_cubes.get(index) {
+            self.queue.write_buffer(
+                &cube.transform_buffer,
+                0,
+                bytemuck::cast_slice(&transform.to_cols_array()),
+            );
+        }
+    }
+
+    /// Set the visibility of a prop cube.
+    pub fn set_prop_cube_visible(&mut self, index: usize, visible: bool) {
+        if let Some(cube) = self.prop_cubes.get_mut(index) {
+            cube.visible = visible;
+        }
+    }
+
+    /// Add a new prop sphere and return its index.
+    pub fn add_prop_sphere(&mut self) -> Result<usize> {
+        let transform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Prop Sphere Transform Buffer"),
+                contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Prop Sphere Transform Bind Group"),
+            layout: &self.model_transform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let prop_sphere = PropSphere {
+            transform_buffer,
+            transform_bind_group,
+            visible: false,
+        };
+
+        let index = self.prop_spheres.len();
+        self.prop_spheres.push(prop_sphere);
+        Ok(index)
+    }
+
+    /// Set the transform of a prop sphere.
+    pub fn set_prop_sphere_transform(&mut self, index: usize, transform: Mat4) {
+        if let Some(sphere) = self.prop_spheres.get(index) {
+            self.queue.write_buffer(
+                &sphere.transform_buffer,
+                0,
+                bytemuck::cast_slice(&transform.to_cols_array()),
+            );
+        }
+    }
+
+    /// Set the visibility of a prop sphere.
+    pub fn set_prop_sphere_visible(&mut self, index: usize, visible: bool) {
+        if let Some(sphere) = self.prop_spheres.get_mut(index) {
+            sphere.visible = visible;
+        }
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
@@ -602,6 +789,43 @@ impl Renderer {
                 pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 pass.set_bind_group(1, &cube.transform_bind_group, &[]);
                 pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            }
+        }
+
+        // Draw prop cubes
+        let visible_props: Vec<_> = self.prop_cubes.iter().filter(|c| c.visible).collect();
+        if !visible_props.is_empty() {
+            pass.set_pipeline(&self.player_cube_pipeline);
+            pass.set_vertex_buffer(0, self.prop_cube_vertex_buffer.slice(..));
+            // Reuse player cube index buffer (standard cube indices)
+            pass.set_index_buffer(
+                self.player_cube_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+
+            for cube in visible_props {
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &cube.transform_bind_group, &[]);
+                pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            }
+        }
+
+        // Draw prop spheres
+        let visible_spheres: Vec<_> = self.prop_spheres.iter().filter(|s| s.visible).collect();
+        if !visible_spheres.is_empty() {
+            // Use player_cube_pipeline as it handles basic colored geometry + transform + camera
+            // We reuse it because spheres have Vertex format compatible with it
+            pass.set_pipeline(&self.player_cube_pipeline);
+            pass.set_vertex_buffer(0, self.prop_sphere_vertex_buffer.slice(..));
+            pass.set_index_buffer(
+                self.prop_sphere_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+
+            for sphere in visible_spheres {
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &sphere.transform_bind_group, &[]);
+                pass.draw_indexed(0..self.sphere_index_count, 0, 0..1);
             }
         }
     }
