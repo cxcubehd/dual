@@ -107,8 +107,8 @@ impl Default for PlayerConfig {
 
             stunned_delta_ground_factor: 2.5,
 
-            player_radius: 0.3,
-            player_height: 1.8,
+            player_radius: 0.4,
+            player_height: 1.9,
             ground_check_threshold: 1.0,
 
             coyote_time: 0.05,

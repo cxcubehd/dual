@@ -33,22 +33,28 @@ impl Default for PlayerController {
 
 impl PlayerController {
     pub fn new(config: PlayerConfig) -> Self {
-        let mut character_controller = KinematicCharacterController::default();
-        character_controller.offset = CharacterLength::Absolute(0.02);
-        character_controller.up = Vector::Y;
-        character_controller.max_slope_climb_angle = 50_f32.to_radians();
-        character_controller.min_slope_slide_angle = 35_f32.to_radians();
-        character_controller.snap_to_ground = Some(CharacterLength::Absolute(0.2));
-        character_controller.autostep = Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(0.35),
-            min_width: CharacterLength::Absolute(0.15),
-            include_dynamic_bodies: false,
-        });
+        let character_controller = Self::create_base_character_controller();
 
         Self {
             config,
             character_controller,
         }
+    }
+
+    fn create_base_character_controller() -> KinematicCharacterController {
+        let mut controller = KinematicCharacterController::default();
+        controller.offset = CharacterLength::Absolute(0.02);
+        controller.up = Vector::Y;
+        controller.max_slope_climb_angle = 50_f32.to_radians();
+        controller.min_slope_slide_angle = 40_f32.to_radians();
+        controller.snap_to_ground = Some(CharacterLength::Absolute(0.25));
+        //controller.normal_nudge_factor = 1.0e-3;
+        controller.autostep = Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(0.38),
+            min_width: CharacterLength::Absolute(0.08),
+            include_dynamic_bodies: false,
+        });
+        controller
     }
 
     pub fn config(&self) -> &PlayerConfig {
@@ -81,6 +87,7 @@ impl PlayerController {
         let desired_translation = velocity * dt;
 
         let mut character_controller = self.character_controller.clone();
+
         if velocity.y > 0.0 {
             character_controller.snap_to_ground = None;
             character_controller.autostep = None;
