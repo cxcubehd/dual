@@ -1,0 +1,108 @@
+name: Build Artifacts
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            client-name: client
+            server-name: server
+          - os: windows-latest
+            client-name: client.exe
+            server-name: server.exe
+          - os: macos-latest
+            client-name: client
+            server-name: server
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v5
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+        
+    - name: Cache cargo index
+      uses: actions/cache@v5
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-git-
+        
+    - name: Cache target directory
+      uses: actions/cache@v5
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-target-
+    
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+        
+    - name: Build client
+      run: cargo build --release --bin client
+      
+    - name: Build server
+      run: cargo build --release --bin server
+      
+    - name: Upload client artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: client-${{ matrix.os }}
+        path: target/release/${{ matrix.client-name }}
+        if-no-files-found: error
+        
+    - name: Upload server artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: server-${{ matrix.os }}
+        path: target/release/${{ matrix.server-name }}
+        if-no-files-found: error
+        
+    - name: Create release archives
+      if: startsWith(github.ref, 'refs/tags/')
+      shell: bash
+      run: |
+        mkdir -p dist
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          7z a dist/client-${{ matrix.os }}.zip target/release/${{ matrix.client-name }}
+          7z a dist/server-${{ matrix.os }}.zip target/release/${{ matrix.server-name }}
+        else
+          tar -czf dist/client-${{ matrix.os }}.tar.gz -C target/release ${{ matrix.client-name }}
+          tar -czf dist/server-${{ matrix.os }}.tar.gz -C target/release ${{ matrix.server-name }}
+        fi
+        
+    - name: Upload release archives
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v6
+      with:
+        name: release-archives-${{ matrix.os }}
+        path: dist/*
