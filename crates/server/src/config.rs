@@ -1,4 +1,4 @@
-use dual::PacketLossSimulation;
+use dual::net::PacketLossSimulation;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -12,7 +12,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            tick_rate: 60,
+            tick_rate: 128,
             max_clients: 32,
             snapshot_buffer_size: 256,
             snapshot_send_rate: 1,

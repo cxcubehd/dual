@@ -37,7 +37,6 @@ pub struct ClientConnection {
     pub last_command_ack: u32,
     pub last_acked_tick: u32,
     pub entity_id: Option<u32>,
-    pub lobby_id: Option<u64>,
 
     // Network stats/simulation
     pub last_receive_time: Instant,
@@ -76,7 +75,6 @@ impl ClientConnection {
             last_acked_tick: 0,
             last_receive_time: Instant::now(),
             entity_id: None,
-            lobby_id: None,
             packet_loss_sim: PacketLossSimulation::default(),
             incoming_packet_loss_sim: PacketLossSimulation::default(),
 

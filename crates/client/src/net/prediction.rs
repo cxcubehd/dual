@@ -2,10 +2,11 @@ use std::collections::VecDeque;
 
 use glam::{Quat, Vec3};
 
-use dual::{
-    ClientCommand, Entity, EntityType, PhysicsHandle, PhysicsWorld, PlayerConfig, PlayerController,
-    PlayerState, TestingGround,
-};
+use dual::net::ClientCommand;
+use dual::physics::{PhysicsHandle, PhysicsWorld};
+use dual::player::{PlayerConfig, PlayerController, PlayerState};
+use dual::snapshot::{Entity, EntityKind};
+use dual::map::TestingGround;
 
 const MAX_PENDING_COMMANDS: usize = 128;
 const ERROR_CORRECTION_SPEED: f32 = 20.0;
@@ -82,11 +83,16 @@ impl ClientPrediction {
         // Create a temporary entity for physics processing
         let mut entity = Entity {
             id: 0,
-            entity_type: EntityType::Player,
+            kind: EntityKind::Player,
             position: self.position,
             velocity: Vec3::ZERO,
             orientation: self.orientation,
             physics_handle: self.player_handle,
+            health: 100,
+            max_health: 100,
+            weapon_id: 0,
+            weapon_state: 0,
+            ammo: 0,
             animation_state: 0,
             animation_time: 0.0,
             flags: 0,

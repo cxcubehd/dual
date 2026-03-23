@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use crate::net::{EntityState, WorldSnapshot};
-
-use super::entity::{Entity, EntityHandle, EntityType};
+use super::delta::DeltaEncoder;
+use super::entity::{Entity, EntityHandle, EntityKind, EntityState};
+use super::types::WorldSnapshot;
 
 #[derive(Debug)]
 pub struct World {
@@ -52,9 +52,13 @@ impl World {
         current_time_ms().saturating_sub(self.start_time_ms)
     }
 
-    pub fn spawn(&mut self, entity_type: EntityType) -> EntityHandle {
+    // -----------------------------------------------------------------------
+    // Entity management
+    // -----------------------------------------------------------------------
+
+    pub fn spawn(&mut self, kind: EntityKind) -> EntityHandle {
         let id = self.allocate_id();
-        let entity = Entity::new(id, entity_type);
+        let entity = Entity::new(id, kind);
         self.entities.insert(id, entity);
         EntityHandle(id)
     }
@@ -66,8 +70,8 @@ impl World {
         EntityHandle(id)
     }
 
-    pub fn spawn_with_id(&mut self, id: u32, entity_type: EntityType) -> EntityHandle {
-        let entity = Entity::new(id, entity_type);
+    pub fn spawn_with_id(&mut self, id: u32, kind: EntityKind) -> EntityHandle {
+        let entity = Entity::new(id, kind);
         self.entities.insert(id, entity);
         if id >= self.next_entity_id {
             self.next_entity_id = id + 1;
@@ -115,12 +119,18 @@ impl World {
         &self.removed_entities
     }
 
+    // -----------------------------------------------------------------------
+    // Snapshot generation
+    // -----------------------------------------------------------------------
+
+    /// Collect all entity states into a flat Vec (used as baseline for delta).
+    pub fn collect_entity_states(&self) -> Vec<EntityState> {
+        self.entities.values().map(Entity::to_entity_state).collect()
+    }
+
+    /// Generate a full (non-delta) snapshot.
     pub fn snapshot(&self, last_command_ack: u32) -> WorldSnapshot {
-        let entities = self
-            .entities
-            .values()
-            .map(Entity::to_network_state)
-            .collect();
+        let entities = self.collect_entity_states();
         WorldSnapshot {
             tick: self.tick,
             server_time_ms: self.server_time_ms(),
@@ -128,55 +138,19 @@ impl World {
             baseline_tick: 0,
             is_delta: false,
             entities,
+            deltas: Vec::new(),
             removed_entity_ids: self.removed_entities.clone(),
         }
     }
 
-    pub fn delta_snapshot(&self, last_command_ack: u32) -> WorldSnapshot {
-        let entities = self
-            .entities
-            .values()
-            .filter(|e| e.dirty)
-            .map(Entity::to_network_state)
-            .collect();
-
-        WorldSnapshot {
-            tick: self.tick,
-            server_time_ms: self.server_time_ms(),
-            last_command_ack,
-            baseline_tick: 0,
-            is_delta: false,
-            entities,
-            removed_entity_ids: self.removed_entities.clone(),
-        }
-    }
-
-    pub fn delta_from_baseline(
+    /// Generate a delta-compressed snapshot relative to a baseline.
+    pub fn delta_snapshot(
         &self,
         baseline: &WorldSnapshot,
         last_command_ack: u32,
     ) -> WorldSnapshot {
-        let baseline_entities: HashMap<u32, &EntityState> =
-            baseline.entities.iter().map(|e| (e.entity_id, e)).collect();
-
-        let entities = self
-            .entities
-            .values()
-            .filter_map(|entity| {
-                let current = entity.to_network_state();
-                match baseline_entities.get(&entity.id) {
-                    Some(baseline) if states_equal(&current, baseline) => None,
-                    _ => Some(current),
-                }
-            })
-            .collect();
-
-        let removed_entity_ids = baseline
-            .entities
-            .iter()
-            .filter(|e| !self.entities.contains_key(&e.entity_id))
-            .map(|e| e.entity_id)
-            .collect();
+        let current = self.collect_entity_states();
+        let (deltas, despawned) = DeltaEncoder::encode(&baseline.entities, &current);
 
         WorldSnapshot {
             tick: self.tick,
@@ -184,8 +158,9 @@ impl World {
             last_command_ack,
             baseline_tick: baseline.tick,
             is_delta: true,
-            entities,
-            removed_entity_ids,
+            entities: Vec::new(),
+            deltas,
+            removed_entity_ids: despawned,
         }
     }
 
@@ -203,16 +178,6 @@ fn current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn states_equal(a: &EntityState, b: &EntityState) -> bool {
-    a.entity_id == b.entity_id
-        && a.entity_type == b.entity_type
-        && a.position == b.position
-        && a.velocity == b.velocity
-        && a.orientation == b.orientation
-        && a.animation_state == b.animation_state
-        && a.flags == b.flags
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,7 +186,7 @@ mod tests {
     fn snapshot_generation() {
         let mut world = World::new();
         let player = world.spawn_player(Vec3::new(0.0, 1.0, 0.0));
-        world.spawn(EntityType::Item);
+        world.spawn(EntityKind::Item);
 
         let snapshot = world.snapshot(0);
 
@@ -244,12 +209,11 @@ mod tests {
             entity.dirty = true;
         }
 
-        let delta = world.delta_from_baseline(&baseline, 0);
-
+        let delta = world.delta_snapshot(&baseline, 0);
         assert!(delta.is_delta);
         assert_eq!(delta.baseline_tick, 0);
-        assert_eq!(delta.entities.len(), 1);
-        assert_eq!(delta.entities[0].entity_id, player1.id());
+        assert_eq!(delta.deltas.len(), 1);
+        assert_eq!(delta.deltas[0].net_id, player1.id());
     }
 
     #[test]
@@ -262,10 +226,8 @@ mod tests {
         world.advance_tick();
         world.despawn(player2);
 
-        let delta = world.delta_from_baseline(&baseline, 0);
-
+        let delta = world.delta_snapshot(&baseline, 0);
         assert!(delta.is_delta);
-        assert_eq!(delta.entities.len(), 0);
         assert_eq!(delta.removed_entity_ids.len(), 1);
         assert_eq!(delta.removed_entity_ids[0], player2.id());
     }

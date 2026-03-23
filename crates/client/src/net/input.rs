@@ -1,4 +1,4 @@
-use dual::ClientCommand;
+use dual::net::ClientCommand;
 
 #[derive(Debug, Clone, Default)]
 pub struct InputState {

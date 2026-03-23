@@ -7,11 +7,14 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use dual::{
-    ClientCommand, CommandProcessor, ConnectionManager, ConnectionState, EntityHandle,
-    NetworkEndpoint, NetworkStats, Packet, PacketHeader, PacketLossSimulation, PacketType,
-    PhysicsSync, PhysicsWorld, Reliability, SnapshotBuffer, TestingGround, World, WorldSnapshot,
+use dual::map::TestingGround;
+use dual::net::{
+    ClientCommand, ConnectionManager, ConnectionState, NetworkEndpoint, NetworkStats, Packet,
+    PacketHeader, PacketLossSimulation, PacketType, Reliability,
 };
+use dual::physics::{PhysicsSync, PhysicsWorld};
+use dual::simulation::CommandProcessor;
+use dual::snapshot::{EntityHandle, SnapshotRingBuffer, World, WorldSnapshot};
 
 use crate::config::ServerConfig;
 use crate::events::{DisconnectReason, ServerEvent};
@@ -56,7 +59,7 @@ pub struct GameServer {
     world: World,
     physics: PhysicsWorld,
     command_processor: CommandProcessor,
-    snapshot_history: SnapshotBuffer,
+    snapshot_history: SnapshotRingBuffer<WorldSnapshot>,
     command_queue: VecDeque<QueuedCommand>,
     delayed_packets: BinaryHeap<DelayedPacket>,
     delayed_incoming_packets: BinaryHeap<DelayedPacket>,
@@ -73,7 +76,7 @@ pub struct GameServer {
 impl GameServer {
     pub fn new(bind_addr: &str, config: ServerConfig) -> io::Result<Self> {
         let endpoint = NetworkEndpoint::bind(bind_addr)?;
-        let tick_duration = Duration::from_secs_f64(1.0 / config.tick_rate as f64);
+        let tick_duration = Duration::from_micros(1_000_000 / config.tick_rate as u64);
 
         let mut pending_events = VecDeque::new();
         pending_events.push_back(ServerEvent::ClientConnecting {
@@ -92,7 +95,7 @@ impl GameServer {
             world,
             physics,
             command_processor: CommandProcessor::new(),
-            snapshot_history: SnapshotBuffer::new(config.snapshot_buffer_size),
+            snapshot_history: SnapshotRingBuffer::new(config.snapshot_buffer_size),
             command_queue: VecDeque::new(),
             delayed_packets: BinaryHeap::new(),
             delayed_incoming_packets: BinaryHeap::new(),
@@ -242,7 +245,7 @@ impl GameServer {
         self.tick = self.world.tick();
 
         let snapshot = self.world.snapshot(0);
-        self.snapshot_history.push(snapshot);
+        self.snapshot_history.insert(self.tick, snapshot);
 
         if self.tick % self.config.snapshot_send_rate == 0 {
             self.broadcast_snapshots();
@@ -322,7 +325,7 @@ impl GameServer {
 
         if last_acked_tick > 0 && baseline_age < max_delta_age {
             if let Some(baseline) = self.snapshot_history.get(last_acked_tick) {
-                return self.world.delta_from_baseline(baseline, last_cmd_ack);
+                return self.world.delta_snapshot(baseline, last_cmd_ack);
             }
         }
 
@@ -396,8 +399,8 @@ impl GameServer {
             PacketType::ChallengeResponse { combined_salt } => {
                 self.handle_challenge_response(addr, combined_salt)?;
             }
-            PacketType::ClientCommand(command) => {
-                self.handle_client_command(addr, command)?;
+            PacketType::ClientInput(commands) => {
+                self.handle_client_input(addr, commands)?;
             }
             PacketType::Ping { timestamp } => {
                 self.handle_ping(addr, timestamp)?;
@@ -509,6 +512,7 @@ impl GameServer {
             PacketType::ConnectionAccepted {
                 client_id,
                 entity_id,
+                tick_rate: self.config.tick_rate,
             },
             Reliability::Reliable,
         );
@@ -518,10 +522,10 @@ impl GameServer {
         Ok(())
     }
 
-    fn handle_client_command(
+    fn handle_client_input(
         &mut self,
         addr: SocketAddr,
-        command: ClientCommand,
+        commands: Vec<ClientCommand>,
     ) -> io::Result<()> {
         let Some(client) = self.connections.get_by_addr(&addr) else {
             return Ok(());
@@ -531,10 +535,13 @@ impl GameServer {
             return Ok(());
         }
 
-        self.command_queue.push_back(QueuedCommand {
-            client_id: client.client_id,
-            command,
-        });
+        let client_id = client.client_id;
+        for command in commands {
+            self.command_queue.push_back(QueuedCommand {
+                client_id,
+                command,
+            });
+        }
 
         Ok(())
     }

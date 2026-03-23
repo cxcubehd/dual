@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 
-use dual::{Entity, EntityState, EntityType, WorldSnapshot};
+use dual::snapshot::{Entity, EntityKind, EntityState, WorldSnapshot};
 
 pub const DEFAULT_INTERPOLATION_DELAY_MS: f64 = 100.0;
 
@@ -32,7 +32,7 @@ impl Default for InterpolationConfig {
 #[derive(Debug, Clone)]
 pub struct InterpolatedEntity {
     pub id: u32,
-    pub entity_type: EntityType,
+    pub entity_type: EntityKind,
     pub position: Vec3,
     pub velocity: Vec3,
     pub orientation: Quat,
@@ -45,7 +45,7 @@ impl From<&Entity> for InterpolatedEntity {
     fn from(entity: &Entity) -> Self {
         Self {
             id: entity.id,
-            entity_type: entity.entity_type,
+            entity_type: entity.kind,
             position: entity.position,
             velocity: entity.velocity,
             orientation: entity.orientation,
@@ -57,8 +57,8 @@ impl From<&Entity> for InterpolatedEntity {
 }
 
 impl InterpolatedEntity {
-    pub fn from_network_state(state: &EntityState) -> Self {
-        let entity = Entity::from_network_state(state);
+    pub fn from_entity_state(state: &EntityState) -> Self {
+        let entity = Entity::from_entity_state(state);
         Self::from(&entity)
     }
 }
@@ -250,7 +250,7 @@ impl InterpolationEngine {
                 if let Some(existing) = self.interpolated_entities.get_mut(&entity_id) {
                     existing.position += velocity * delta_time;
                 } else {
-                    let mut entity = InterpolatedEntity::from_network_state(state);
+                    let mut entity = InterpolatedEntity::from_entity_state(state);
                     entity.position += velocity * delta_time;
                     self.interpolated_entities.insert(entity_id, entity);
                 }
@@ -310,14 +310,14 @@ impl InterpolationEngine {
             let interpolated = if let Some(to_state) = to_entities.get(&entity_id) {
                 interpolate_entity_states(from_state, to_state, t)
             } else {
-                InterpolatedEntity::from_network_state(from_state)
+                InterpolatedEntity::from_entity_state(from_state)
             };
             self.interpolated_entities.insert(entity_id, interpolated);
         }
 
         for to_state in &to.entities {
             if !self.interpolated_entities.contains_key(&to_state.entity_id) {
-                let interpolated = InterpolatedEntity::from_network_state(to_state);
+                let interpolated = InterpolatedEntity::from_entity_state(to_state);
                 self.interpolated_entities
                     .insert(to_state.entity_id, interpolated);
             }
@@ -390,7 +390,7 @@ fn interpolate_entity_states(from: &EntityState, to: &EntityState, t: f32) -> In
 
     InterpolatedEntity {
         id: from.entity_id,
-        entity_type: EntityType::from(from.entity_type),
+        entity_type: EntityKind::from(from.entity_type),
         position,
         velocity,
         orientation,
