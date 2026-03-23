@@ -1,7 +1,7 @@
 use glam::Vec3;
 
 use crate::physics::PhysicsWorld;
-use crate::snapshot::{EntityHandle, EntityType, World};
+use crate::snapshot::{EntityHandle, EntityKind, World};
 
 use super::{MapObject, MapObjectKind};
 
@@ -125,7 +125,7 @@ impl TestingGround {
                     physics.add_static_box(object.position, object.half_extents);
                 }
                 MapObjectKind::DynamicBox => {
-                    let handle = world.spawn(EntityType::DynamicProp);
+                    let handle = world.spawn(EntityKind::DynamicProp);
                     object.entity_id = Some(handle.id());
 
                     if let Some(entity) = world.get_mut(handle) {

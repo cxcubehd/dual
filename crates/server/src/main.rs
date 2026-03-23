@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use config::ServerConfig;
-use dual::PacketLossSimulation;
+use dual::net::{PacketLossSimulation, DEFAULT_PORT};
 use events::ServerEvent;
 use server::GameServer;
 use tui::TuiState;
@@ -28,10 +28,10 @@ struct Args {
     #[arg(short, long, default_value = "0.0.0.0")]
     bind: String,
 
-    #[arg(short, long, default_value_t = dual::DEFAULT_PORT)]
+    #[arg(short, long, default_value_t = DEFAULT_PORT)]
     port: u16,
 
-    #[arg(short, long, default_value_t = 60)]
+    #[arg(short, long, default_value_t = 128)]
     tick_rate: u32,
 
     #[arg(short, long, default_value_t = 32)]

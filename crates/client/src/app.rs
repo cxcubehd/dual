@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use dual::ConnectionState;
+use dual::net::ConnectionState;
+use dual::snapshot::EntityKind;
 use glam::{Mat4, Vec3};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -248,7 +249,7 @@ impl App {
 
         let entities: Vec<_> = client
             .entities()
-            .filter(|e| e.entity_type == dual::EntityType::Player)
+            .filter(|e| e.entity_type == EntityKind::Player)
             .collect();
 
         while player_cube_indices.len() < entities.len() {
@@ -289,7 +290,7 @@ impl App {
     ) {
         let entities: Vec<_> = client
             .entities()
-            .filter(|e| e.entity_type == dual::EntityType::DynamicProp)
+            .filter(|e| e.entity_type == EntityKind::DynamicProp)
             .collect();
 
         while prop_indices.len() < entities.len() {

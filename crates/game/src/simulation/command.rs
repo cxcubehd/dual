@@ -70,7 +70,7 @@ impl Default for CommandProcessor {
 }
 
 impl CommandProcessor {
-    const TICK_RATE: f32 = 1.0 / 60.0;
+    const TICK_RATE: f32 = 1.0 / 128.0;
 
     pub fn new() -> Self {
         Self {

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -6,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use dual::{
-    ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, PacketType, Reliability,
-    WorldSnapshot,
+use dual::net::{
+    ClientCommand, ClientConnection, ConnectionState, NetworkEndpoint, NetworkStats, PacketType,
+    Reliability,
 };
+use dual::snapshot::WorldSnapshot;
 
 use super::config::ClientConfig;
 use super::input::InputState;
@@ -37,6 +39,7 @@ pub struct NetworkClient {
     estimated_server_tick: u32,
     clock_offset_ms: i64,
     input_accumulator: f32,
+    recent_commands: VecDeque<ClientCommand>,
 }
 
 impl NetworkClient {
@@ -72,6 +75,7 @@ impl NetworkClient {
             estimated_server_tick: 0,
             clock_offset_ms: 0,
             input_accumulator: 0.0,
+            recent_commands: VecDeque::with_capacity(3),
             config,
         })
     }
@@ -129,6 +133,7 @@ impl NetworkClient {
         self.connection_start_time = None;
         self.last_server_ack = 0;
         self.estimated_server_tick = 0;
+        self.recent_commands.clear();
     }
 
     fn send_connection_request(&mut self) -> io::Result<()> {
@@ -215,9 +220,16 @@ impl NetworkClient {
 
         self.prediction.store_command(&command, sequence);
 
+        // Keep last 3 commands for redundant sending
+        self.recent_commands.push_back(command.clone());
+        while self.recent_commands.len() > 3 {
+            self.recent_commands.pop_front();
+        }
+
+        let commands: Vec<ClientCommand> = self.recent_commands.iter().cloned().collect();
         let packet = self
             .connection
-            .send_packet(PacketType::ClientCommand(command), Reliability::Unreliable);
+            .send_packet(PacketType::ClientInput(commands), Reliability::Unreliable);
         self.endpoint.send(&packet)?;
 
         Ok(())
@@ -261,8 +273,9 @@ impl NetworkClient {
             PacketType::ConnectionAccepted {
                 client_id,
                 entity_id,
+                tick_rate,
             } => {
-                self.handle_connection_accepted(client_id, entity_id)?;
+                self.handle_connection_accepted(client_id, entity_id, tick_rate)?;
             }
             PacketType::ConnectionDenied { reason } => {
                 self.handle_connection_denied(&reason)?;
@@ -307,11 +320,12 @@ impl NetworkClient {
         Ok(())
     }
 
-    fn handle_connection_accepted(&mut self, client_id: u32, entity_id: u32) -> io::Result<()> {
+    fn handle_connection_accepted(&mut self, client_id: u32, entity_id: u32, tick_rate: u32) -> io::Result<()> {
         log::info!(
-            "Connected to server with client ID {}, entity ID {}",
+            "Connected to server with client ID {}, entity ID {}, tick_rate {}",
             client_id,
-            entity_id
+            entity_id,
+            tick_rate
         );
 
         self.client_id = Some(client_id);
@@ -321,6 +335,12 @@ impl NetworkClient {
         self.connection.client_id = client_id;
         self.connection.entity_id = Some(entity_id);
         self.endpoint.set_state(ConnectionState::Connected);
+
+        // Reconfigure prediction and command rate based on server's tick rate
+        if tick_rate > 0 {
+            self.prediction = ClientPrediction::new(tick_rate);
+            self.command_interval = Duration::from_secs_f64(1.0 / tick_rate as f64);
+        }
 
         Ok(())
     }
