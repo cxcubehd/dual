@@ -9,16 +9,15 @@ use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
+use dual::{GameServer, PacketLossSimulation, ServerConfig, ServerEvent};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-
-use dual::{GameServer, PacketLossSimulation, ServerConfig, ServerEvent};
 use tui::TuiState;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(name = "dual-server")]
 #[command(about = "Dual game server")]
-struct Args {
+pub struct ServerArgs {
     #[arg(short, long, default_value = "0.0.0.0")]
     bind: String,
 
@@ -50,8 +49,7 @@ struct Args {
     jitter: u32,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: ServerArgs) -> Result<()> {
     let bind_addr = format!("{}:{}", args.bind, args.port);
 
     let global_packet_loss = if args.simulate_packet_loss {
@@ -76,7 +74,8 @@ fn main() -> Result<()> {
     let mut server = GameServer::new(&bind_addr, config)?;
 
     if args.headless {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
         log::info!("Server started on {}", server.local_addr());
         server.run();
         log::info!("Server shutting down");

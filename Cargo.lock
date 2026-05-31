@@ -810,48 +810,26 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 name = "dual"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.11.1",
- "glam 0.33.0",
- "log",
- "rapier3d",
- "rkyv",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "dual_client"
-version = "0.1.0"
-dependencies = [
  "anyhow",
+ "bitflags 2.11.1",
  "bytemuck",
  "clap",
  "crossterm",
- "dual",
  "env_logger",
  "glam 0.33.0",
  "gltf",
  "glyphon",
  "image",
  "log",
+ "rapier3d",
  "ratatui",
+ "rkyv",
  "rust-embed",
+ "serde",
+ "thiserror 2.0.18",
  "tokio",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "dual_server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "dual",
- "env_logger",
- "log",
- "ratatui",
 ]
 
 [[package]]

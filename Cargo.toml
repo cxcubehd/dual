@@ -1,14 +1,36 @@
-[workspace]
-members = ["crates/*"]
-resolver = "3"
-
-[workspace.package]
+[package]
+name = "dual"
 version = "0.1.0"
 edition = "2024"
 license = "All Rights Reserved"
 
-[workspace.dependencies]
-# Core
+[features]
+default = []
+client = [
+    "dep:anyhow",
+    "dep:bytemuck",
+    "dep:clap",
+    "dep:crossterm",
+    "dep:env_logger",
+    "dep:gltf",
+    "dep:glyphon",
+    "dep:image",
+    "dep:ratatui",
+    "dep:rust-embed",
+    "dep:tokio",
+    "dep:wgpu",
+    "dep:winit",
+]
+server = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:crossterm",
+    "dep:env_logger",
+    "dep:ratatui",
+]
+both = ["client", "server"]
+
+[dependencies]
 glam = { version = "0.33", features = ["serde", "rkyv", "bytecheck"] }
 serde = { version = "1.0", features = ["derive"] }
 rkyv = { version = "0.8", features = ["bytecheck"] }
@@ -17,34 +39,22 @@ rapier3d = { version = "0.32", features = [
     "enhanced-determinism",
     "serde-serialize",
 ] }
-
-# Async
-tokio = { version = "1.49", features = ["full"] }
-
-# CLI and TUI
-clap = { version = "4.5", features = ["derive"] }
-ratatui = "0.30"
-crossterm = "0.29"
-
-# Logging
 log = "0.4"
-env_logger = "0.11"
-
-# Error handling
-anyhow = "1.0"
 thiserror = "2.0"
 
-# Graphics (client only)
-wgpu = "29.0"
-winit = "0.30"
-glyphon = "0.11"
-bytemuck = { version = "1.24", features = ["derive"] }
+anyhow = { version = "1.0", optional = true }
+bytemuck = { version = "1.24", features = ["derive"], optional = true }
+clap = { version = "4.5", features = ["derive"], optional = true }
+crossterm = { version = "0.29", optional = true }
+env_logger = { version = "0.11", optional = true }
+gltf = { version = "1.4", optional = true }
+glyphon = { version = "0.11", optional = true }
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
-] }
-gltf = "1.4"
-rust-embed = "8.11"
-
-# Internal crates
-dual = { path = "crates/game" }
+], optional = true }
+ratatui = { version = "0.30", optional = true }
+rust-embed = { version = "8.11", optional = true }
+tokio = { version = "1.49", features = ["full"], optional = true }
+wgpu = { version = "29.0", optional = true }
+winit = { version = "0.30", optional = true }
