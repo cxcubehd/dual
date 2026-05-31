@@ -9,11 +9,14 @@ license = "All Rights Reserved"
 
 [workspace.dependencies]
 # Core
-glam = { version = "0.31", features = ["serde", "rkyv", "bytecheck"] }
+glam = { version = "0.33", features = ["serde", "rkyv", "bytecheck"] }
 serde = { version = "1.0", features = ["derive"] }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 bitflags = "2.10"
-rapier3d = { version = "0.32", features = ["enhanced-determinism", "serde-serialize"] }
+rapier3d = { version = "0.32", features = [
+    "enhanced-determinism",
+    "serde-serialize",
+] }
 
 # Async
 tokio = { version = "1.49", features = ["full"] }
@@ -32,11 +35,14 @@ anyhow = "1.0"
 thiserror = "2.0"
 
 # Graphics (client only)
-wgpu = "28.0"
+wgpu = "29.0"
 winit = "0.30"
-glyphon = "0.10"
+glyphon = "0.11"
 bytemuck = { version = "1.24", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
 gltf = "1.4"
 rust-embed = "8.11"
 

@@ -213,7 +213,10 @@ impl PhysicsWorld {
         for collider_handle in collider_handles {
             if let Some(collider) = self.colliders.get_mut(collider_handle) {
                 let half_height = height / 2.0;
-                collider.set_shape(rapier3d::geometry::SharedShape::cylinder(half_height, radius));
+                collider.set_shape(rapier3d::geometry::SharedShape::cylinder(
+                    half_height,
+                    radius,
+                ));
             }
         }
     }

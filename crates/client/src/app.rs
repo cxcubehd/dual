@@ -11,7 +11,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 use crate::debug::DebugStats;
 use crate::game::GameState;
 use crate::net::NetworkClient;
-use crate::render::{MenuOption, Renderer};
+use crate::render::{MenuOption, RenderError, Renderer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
@@ -229,9 +229,9 @@ impl App {
 
         match renderer.render() {
             Ok(()) => {}
-            Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
-            Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-            Err(e) => log::error!("Render error: {:?}", e),
+            Err(RenderError::Lost | RenderError::Outdated) => renderer.resize(renderer.size),
+            Err(RenderError::Timeout | RenderError::Occluded) => {}
+            Err(RenderError::Validation) => log::error!("Render validation error"),
         }
 
         if let Some(window) = &self.window {
