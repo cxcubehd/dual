@@ -2,7 +2,6 @@ mod app;
 mod assets;
 mod debug;
 mod game;
-pub mod net;
 mod render;
 mod tui;
 
@@ -11,7 +10,7 @@ use std::net::SocketAddr;
 use clap::Parser;
 use winit::event_loop::EventLoop;
 
-use net::{ClientConfig, NetworkClient};
+use dual::{ClientConfig, NetworkClient};
 
 #[derive(Parser)]
 #[command(name = "dual")]

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use winit::keyboard::KeyCode;
 
-use crate::net::InputState;
+use dual::InputState;
 
 #[derive(Default)]
 pub struct Input {

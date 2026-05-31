@@ -10,7 +10,7 @@ use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::net::{ClientConfig, NetworkClient};
+use dual::{ClientConfig, NetworkClient};
 
 pub use screens::Screen;
 

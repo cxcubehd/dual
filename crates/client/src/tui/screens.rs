@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use crate::net::NetworkClient;
+use dual::NetworkClient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {

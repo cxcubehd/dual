@@ -1,9 +1,13 @@
+mod client;
+mod client_config;
 mod connection;
 mod endpoint;
 mod protocol;
 mod stats;
 mod tracking;
 
+pub use client::NetworkClient;
+pub use client_config::ClientConfig;
 pub use connection::{ClientConnection, ConnectionManager, ConnectionState, Reliability};
 pub use endpoint::NetworkEndpoint;
 pub use protocol::{ArchivedPacket, sequence_greater_than};

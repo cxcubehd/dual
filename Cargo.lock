@@ -824,7 +824,6 @@ name = "dual_client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bitflags 2.11.1",
  "bytemuck",
  "clap",
  "crossterm",
@@ -836,9 +835,7 @@ dependencies = [
  "image",
  "log",
  "ratatui",
- "rkyv",
  "rust-embed",
- "serde",
  "tokio",
  "wgpu",
  "winit",
@@ -853,10 +850,8 @@ dependencies = [
  "crossterm",
  "dual",
  "env_logger",
- "glam 0.33.0",
  "log",
  "ratatui",
- "tokio",
 ]
 
 [[package]]

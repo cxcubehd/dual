@@ -11,8 +11,6 @@ path = "src/main.rs"
 [dependencies]
 dual.workspace = true
 
-glam.workspace = true
-tokio.workspace = true
 clap.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
