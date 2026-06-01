@@ -6,6 +6,7 @@ license = "All Rights Reserved"
 
 [features]
 default = []
+steamworks = ["dep:steamworks"]
 client = [
     "dep:anyhow",
     "dep:bytemuck",
@@ -20,7 +21,7 @@ client = [
     "dep:tokio",
     "dep:wgpu",
     "dep:winit",
-    "dep:steamworks",
+    "steamworks",
 ]
 server = [
     "dep:anyhow",
@@ -28,7 +29,7 @@ server = [
     "dep:crossterm",
     "dep:env_logger",
     "dep:ratatui",
-    "dep:steamworks",
+    "steamworks",
 ]
 both = ["client", "server"]
 
