@@ -118,6 +118,26 @@ impl PhysicsWorld {
         self.colliders.insert(collider)
     }
 
+    pub fn add_static_ramp(&mut self, position: Vec3, half_extents: Vec3) -> ColliderHandle {
+        let hx = half_extents.x;
+        let hy = half_extents.y;
+        let hz = half_extents.z;
+
+        let vertices = vec![
+            Vector::new(-hx, -hy, -hz),
+            Vector::new(hx, -hy, -hz),
+            Vector::new(hx, -hy, hz),
+            Vector::new(-hx, -hy, hz),
+            Vector::new(hx, hy, hz),
+            Vector::new(-hx, hy, hz),
+        ];
+        let collider = ColliderBuilder::convex_hull(&vertices)
+            .expect("static ramp hull should be valid")
+            .translation(Vector::new(position.x, position.y, position.z))
+            .build();
+        self.colliders.insert(collider)
+    }
+
     pub fn add_ground(&mut self, y: Real, half_size: Real) -> ColliderHandle {
         let collider = ColliderBuilder::cuboid(half_size, 0.1, half_size)
             .translation(Vector::new(0.0, y, 0.0))
@@ -248,22 +268,43 @@ impl PhysicsWorld {
         )
     }
 
-    fn query_pipeline(&self) -> QueryPipeline<'_> {
-        self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.bodies,
-            &self.colliders,
-            QueryFilter::default(),
-        )
-    }
-
     pub fn raycast(
         &self,
         origin: Vec3,
         direction: Vec3,
         max_distance: Real,
     ) -> Option<(Vec3, Real)> {
-        let query = self.query_pipeline();
+        self.raycast_with_filter(origin, direction, max_distance, QueryFilter::default())
+    }
+
+    pub fn raycast_excluding_body(
+        &self,
+        handle: RigidBodyHandle,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: Real,
+    ) -> Option<(Vec3, Real)> {
+        self.raycast_with_filter(
+            origin,
+            direction,
+            max_distance,
+            QueryFilter::default().exclude_rigid_body(handle),
+        )
+    }
+
+    fn raycast_with_filter(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: Real,
+        filter: QueryFilter,
+    ) -> Option<(Vec3, Real)> {
+        let query = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        );
         let ray = Ray::new(
             Vector::new(origin.x, origin.y, origin.z),
             Vector::new(direction.x, direction.y, direction.z),

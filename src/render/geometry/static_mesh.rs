@@ -31,6 +31,23 @@ impl StaticMesh {
         )
     }
 
+    pub fn new_ramp(
+        device: &wgpu::Device,
+        transform_bind_group_layout: &wgpu::BindGroupLayout,
+        position: Vec3,
+        half_extents: Vec3,
+        color: [f32; 3],
+    ) -> Self {
+        let (vertices, indices) = create_ramp_mesh(half_extents, color);
+        Self::from_vertices(
+            device,
+            transform_bind_group_layout,
+            &vertices,
+            &indices,
+            position,
+        )
+    }
+
     pub fn new_ground(
         device: &wgpu::Device,
         transform_bind_group_layout: &wgpu::BindGroupLayout,
@@ -158,6 +175,47 @@ fn create_ground_mesh(size: f32) -> (Vec<Vertex>, Vec<u16>) {
             ]);
         }
     }
+
+    (vertices, indices)
+}
+
+/// Create a wedge ramp that rises from -Z to +Z.
+fn create_ramp_mesh(half_extents: Vec3, color: [f32; 3]) -> (Vec<Vertex>, Vec<u16>) {
+    let hx = half_extents.x;
+    let hy = half_extents.y;
+    let hz = half_extents.z;
+
+    let top_color = [
+        (color[0] * 1.2).min(1.0),
+        (color[1] * 1.2).min(1.0),
+        (color[2] * 1.2).min(1.0),
+    ];
+    let side_color = color;
+    let bottom_color = [color[0] * 0.75, color[1] * 0.75, color[2] * 0.75];
+
+    #[rustfmt::skip]
+    let vertices = vec![
+        Vertex { position: [-hx, -hy, -hz], color: side_color },   // 0: low front-left
+        Vertex { position: [ hx, -hy, -hz], color: side_color },   // 1: low front-right
+        Vertex { position: [ hx, -hy,  hz], color: bottom_color }, // 2: lower back-right
+        Vertex { position: [-hx, -hy,  hz], color: bottom_color }, // 3: lower back-left
+        Vertex { position: [ hx,  hy,  hz], color: top_color },    // 4: upper back-right
+        Vertex { position: [-hx,  hy,  hz], color: top_color },    // 5: upper back-left
+    ];
+
+    #[rustfmt::skip]
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, // Bottom
+        2, 1, 0, 3, 2, 0,
+        3, 2, 4, 3, 4, 5, // High back
+        4, 2, 3, 5, 4, 3,
+        0, 4, 1, 0, 5, 4, // Sloped top
+        1, 4, 0, 4, 5, 0,
+        0, 3, 5,          // Left side
+        5, 3, 0,
+        1, 4, 2,          // Right side
+        2, 4, 1,
+    ];
 
     (vertices, indices)
 }

@@ -4,6 +4,7 @@ use glam::Vec3;
 pub enum MapObjectKind {
     Ground,
     StaticBox,
+    StaticRamp,
     DynamicBox,
 }
 
@@ -30,6 +31,16 @@ impl MapObject {
     pub fn static_box(position: Vec3, half_extents: Vec3) -> Self {
         Self {
             kind: MapObjectKind::StaticBox,
+            position,
+            half_extents,
+            mass: None,
+            entity_id: None,
+        }
+    }
+
+    pub fn static_ramp(position: Vec3, half_extents: Vec3) -> Self {
+        Self {
+            kind: MapObjectKind::StaticRamp,
             position,
             half_extents,
             mass: None,

@@ -17,6 +17,9 @@ use crate::snapshot::Entity;
 use super::{PlayerConfig, PlayerState};
 
 const PITCH_LIMIT: f32 = 89.9999_f32.to_radians();
+const CHARACTER_CONTROLLER_OFFSET: f32 = 0.02;
+const GROUND_SNAP_DISTANCE: f32 = 0.25;
+const MIN_GROUND_SNAP_PROBE: f32 = 0.001;
 
 struct MovementInput {
     world_direction: Vec3,
@@ -51,11 +54,11 @@ impl PlayerController {
 
     fn create_base_character_controller() -> KinematicCharacterController {
         let mut controller = KinematicCharacterController::default();
-        controller.offset = CharacterLength::Absolute(0.02);
+        controller.offset = CharacterLength::Absolute(CHARACTER_CONTROLLER_OFFSET);
         controller.up = Vector::Y;
         controller.max_slope_climb_angle = 50_f32.to_radians();
         controller.min_slope_slide_angle = 40_f32.to_radians();
-        controller.snap_to_ground = Some(CharacterLength::Absolute(0.25));
+        controller.snap_to_ground = Some(CharacterLength::Absolute(GROUND_SNAP_DISTANCE));
         controller.autostep = Some(CharacterAutostep {
             max_height: CharacterLength::Absolute(0.38),
             min_width: CharacterLength::Absolute(0.08),
@@ -100,7 +103,7 @@ impl PlayerController {
             character_controller.autostep = None;
         }
 
-        let corrected = self.move_character(
+        let mut corrected = self.move_character(
             physics,
             &character_controller,
             handle,
@@ -109,6 +112,34 @@ impl PlayerController {
             desired_translation,
             dt,
         );
+
+        if grounded && velocity.y <= 0.0 && corrected.translation.y <= 0.0 {
+            let horizontal_distance =
+                Vec3::new(corrected.translation.x, 0.0, corrected.translation.z).length();
+            let slope_probe =
+                horizontal_distance * self.character_controller.max_slope_climb_angle.tan();
+            let snap_probe = slope_probe.clamp(MIN_GROUND_SNAP_PROBE, GROUND_SNAP_DISTANCE);
+            let position_after_move = character_pos.translation + corrected.translation;
+            let ground_clearance = current_height * 0.5 + CHARACTER_CONTROLLER_OFFSET;
+            let max_ray_distance = ground_clearance + snap_probe;
+
+            if let Some((_, distance)) = physics.raycast_excluding_body(
+                handle,
+                Vec3::new(
+                    position_after_move.x,
+                    position_after_move.y,
+                    position_after_move.z,
+                ),
+                Vec3::NEG_Y,
+                max_ray_distance,
+            ) {
+                let snap_distance = distance - ground_clearance;
+                if snap_distance > 0.0 && snap_distance <= snap_probe {
+                    corrected.translation.y -= snap_distance;
+                }
+                corrected.grounded = true;
+            }
+        }
 
         state.grounded = corrected.grounded;
 

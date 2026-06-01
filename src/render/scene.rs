@@ -24,6 +24,13 @@ pub fn create_testing_ground_meshes(
                 object.half_extents,
                 [0.5, 0.5, 0.55],
             )),
+            MapObjectKind::StaticRamp => Some(StaticMesh::new_ramp(
+                device,
+                transform_bind_group_layout,
+                object.position,
+                object.half_extents,
+                [0.48, 0.54, 0.48],
+            )),
             MapObjectKind::DynamicBox => None,
         })
         .collect()

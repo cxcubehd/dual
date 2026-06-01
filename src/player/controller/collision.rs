@@ -47,7 +47,13 @@ impl PlayerController {
             return Vec3::ZERO;
         }
 
+        let desired_dir = desired / desired_length;
         let corrected_dir = corrected / corrected_length;
+        if corrected_dir.dot(desired_dir) > 0.95 {
+            let projected_speed = velocity.dot(desired_dir);
+            return desired_dir * projected_speed.max(0.0);
+        }
+
         let projected_speed = velocity.dot(corrected_dir);
 
         corrected_dir * projected_speed.max(0.0)

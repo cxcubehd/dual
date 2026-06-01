@@ -63,11 +63,12 @@ impl TestingGround {
 
     fn add_stair_platforms(objects: &mut Vec<MapObject>) {
         let stair_start = Vec3::new(-5.0, 0.0, 5.0);
-        let step_height = 0.3;
-        let step_depth = 0.4;
+        let step_count = 10;
+        let step_height = 0.2;
+        let step_depth = 0.5;
         let step_width = 2.0;
 
-        for i in 0..10 {
+        for i in 0..step_count {
             let y = step_height * (i as f32 + 0.5);
             let z = stair_start.z + step_depth * i as f32;
             objects.push(MapObject::static_box(
@@ -75,6 +76,18 @@ impl TestingGround {
                 Vec3::new(step_width, step_height * 0.5, step_depth * 0.5),
             ));
         }
+
+        let ramp_gap = 0.25;
+        let ramp_width = 1.0;
+        let ramp_height = step_height * step_count as f32;
+        let ramp_depth = step_depth * step_count as f32;
+        let ramp_x = stair_start.x - step_width - ramp_gap - ramp_width;
+        let ramp_z = stair_start.z + ramp_depth * 0.5 - step_depth * 0.5;
+
+        objects.push(MapObject::static_ramp(
+            Vec3::new(ramp_x, ramp_height * 0.5, ramp_z),
+            Vec3::new(ramp_width, ramp_height * 0.5, ramp_depth * 0.5),
+        ));
     }
 
     fn add_dynamic_props(objects: &mut Vec<MapObject>) {
@@ -124,6 +137,9 @@ impl TestingGround {
                 MapObjectKind::StaticBox => {
                     physics.add_static_box(object.position, object.half_extents);
                 }
+                MapObjectKind::StaticRamp => {
+                    physics.add_static_ramp(object.position, object.half_extents);
+                }
                 MapObjectKind::DynamicBox => {
                     let handle = world.spawn(EntityType::DynamicProp);
                     object.entity_id = Some(handle.id());
@@ -156,6 +172,9 @@ impl TestingGround {
                 MapObjectKind::StaticBox => {
                     physics.add_static_box(object.position, object.half_extents);
                 }
+                MapObjectKind::StaticRamp => {
+                    physics.add_static_ramp(object.position, object.half_extents);
+                }
                 MapObjectKind::DynamicBox => {
                     // For prediction, we treat dynamic props as static colliders
                     // since we can't simulate their full physics state locally
@@ -187,5 +206,19 @@ mod tests {
 
         assert!(world.entity_count() > 0);
         assert!(!ground.dynamic_entity_handles().is_empty());
+    }
+
+    #[test]
+    fn testing_ground_places_ramp_left_of_stairs() {
+        let ground = TestingGround::new();
+
+        let ramp = ground
+            .objects()
+            .iter()
+            .find(|object| object.kind == MapObjectKind::StaticRamp)
+            .expect("testing ground should include a ramp");
+
+        assert!(ramp.position.x < -5.0);
+        assert_eq!(ramp.half_extents, Vec3::new(1.0, 1.0, 2.5));
     }
 }
